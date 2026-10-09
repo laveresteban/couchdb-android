@@ -1,0 +1,36 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    services:
+      couchdb:
+        image: couchdb:3
+        ports: ["5984:5984"]
+        env:
+          COUCHDB_USER: admin
+          COUCHDB_PASSWORD: password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Wait for CouchDB
+        run: for i in $(seq 30); do curl -sf localhost:5984/_up && break; sleep 2; done
+      - name: Core tests (unit + replication against CouchDB)
+        run: ./gradlew :sync-core:test
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build Android library
+        run: ./gradlew :android:assembleRelease
