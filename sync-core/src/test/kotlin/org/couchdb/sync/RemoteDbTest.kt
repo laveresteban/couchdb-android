@@ -34,6 +34,22 @@ class RemoteDbTest {
     private fun attachment() = PendingAttachment("a.bin", "application/octet-stream", 4, attachmentDigest("abcd".toByteArray()))
 
     @Test
+    fun `attachment content sent gzip-encoded is read decoded`() =
+        runBlocking<Unit> {
+            val plain = "from server, compressed on disk".repeat(20).toByteArray()
+            val gz =
+                java.io.ByteArrayOutputStream().also { out ->
+                    java.util.zip.GZIPOutputStream(out).use { it.write(plain) }
+                }.toByteArray()
+            couch.on("GET", "/db/doc/b.txt") {
+                MockResponse().setHeader("Content-Encoding", "gzip").setBody(Buffer().write(gz))
+            }
+            val bytes = RemoteDb(url).readAttachment("doc", "b.txt", "1-a") { it.readBytes() }
+            assertContentEquals(plain, bytes)
+            assertEquals(attachmentDigest(plain), attachmentDigest(bytes))
+        }
+
+    @Test
     fun `reads an attachment's bytes at the given revision`() =
         runBlocking {
             couch.on("GET", "/db/doc/a.bin") { MockResponse().setBody(Buffer().write("abcd".toByteArray())) }
