@@ -14,6 +14,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class RemoteDbTest {
     private val server = MockWebServer()
@@ -34,7 +35,7 @@ class RemoteDbTest {
     private fun attachment() = PendingAttachment("a.bin", "application/octet-stream", 4, attachmentDigest("abcd".toByteArray()))
 
     @Test
-    fun `attachment content sent gzip-encoded is read decoded`() =
+    fun `gzip-encoded attachment bodies come back as stored and flagged`() =
         runBlocking<Unit> {
             val plain = "from server, compressed on disk".repeat(20).toByteArray()
             val gz =
@@ -44,16 +45,17 @@ class RemoteDbTest {
             couch.on("GET", "/db/doc/b.txt") {
                 MockResponse().setHeader("Content-Encoding", "gzip").setBody(Buffer().write(gz))
             }
-            val bytes = RemoteDb(url).readAttachment("doc", "b.txt", "1-a") { it.readBytes() }
-            assertContentEquals(plain, bytes)
-            assertEquals(attachmentDigest(plain), attachmentDigest(bytes))
+            val (bytes, gzipped) = RemoteDb(url).readAttachment("doc", "b.txt", "1-a") { s, encoded -> s.readBytes() to encoded }
+            assertTrue(gzipped)
+            assertContentEquals(gz, bytes)
+            assertEquals("gzip", couch.recorded("GET", "/db/doc/b.txt").single().getHeader("Accept-Encoding"))
         }
 
     @Test
     fun `reads an attachment's bytes at the given revision`() =
         runBlocking {
             couch.on("GET", "/db/doc/a.bin") { MockResponse().setBody(Buffer().write("abcd".toByteArray())) }
-            val bytes = RemoteDb(url).readAttachment("doc", "a.bin", "1-a") { it.readBytes() }
+            val bytes = RemoteDb(url).readAttachment("doc", "a.bin", "1-a") { s, _ -> s.readBytes() }
             assertContentEquals("abcd".toByteArray(), bytes)
             assertEquals("1-a", couch.recorded("GET", "/db/doc/a.bin").single().requestUrl!!.queryParameter("rev"))
         }
@@ -64,7 +66,7 @@ class RemoteDbTest {
             couch.on("GET", "/db/doc/gone") { FakeCouch.json("""{"error":"not_found","reason":"missing"}""", 404) }
             assertEquals(
                 404,
-                assertFailsWith<CouchException> { RemoteDb(url).readAttachment("doc", "gone", "1-a") { it.readBytes() } }.status,
+                assertFailsWith<CouchException> { RemoteDb(url).readAttachment("doc", "gone", "1-a") { s, _ -> s.readBytes() } }.status,
             )
         }
 

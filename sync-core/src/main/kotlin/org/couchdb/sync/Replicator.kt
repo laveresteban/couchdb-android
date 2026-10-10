@@ -30,8 +30,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import java.io.IOException
+import java.io.InputStream
 import java.util.Base64
 import java.util.UUID
+import java.util.zip.GZIPInputStream
 
 sealed interface SyncState {
     data object Idle : SyncState
@@ -168,12 +170,31 @@ class Replicator(
             val digest = att.jsonObject["digest"]?.jsonPrimitive?.content ?: continue
             if (io { blobs.has(digest) }) continue
             try {
-                remote.readAttachment(id, name, rev) { stream -> io { blobs.put(digest, stream) } }
+                remote.readAttachment(id, name, rev) { stream, gzipped ->
+                    io { if (gzipped) storeGzipped(digest, stream) else blobs.put(digest, stream) }
+                }
             } catch (e: AttachmentDigestException) {
                 return false
             }
         }
         return true
+    }
+
+    /**
+     * CouchDB stores compressible types gzip-encoded and computes their digest
+     * over those bytes, so the digest matches the encoded or the decoded content.
+     * Stores the decoded content.
+     */
+    private fun storeGzipped(
+        digest: String,
+        stream: InputStream,
+    ) {
+        val encoded = stream.readBytes()
+        val plain = GZIPInputStream(encoded.inputStream()).use { it.readBytes() }
+        if (attachmentDigest(encoded) != digest && attachmentDigest(plain) != digest) {
+            throw AttachmentDigestException("attachment $digest arrived as ${attachmentDigest(plain)}")
+        }
+        blobs.put(digest, plain)
     }
 
     /** Sends local revisions the remote is missing. Returns how many were stored. */

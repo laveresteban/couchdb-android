@@ -142,6 +142,28 @@ class ReplicatorProtocolTest {
         }
 
     @Test
+    fun `compressed attachments are verified against their stored digest and kept decoded`() =
+        runBlocking<Unit> {
+            val plain = "a compressible note ".repeat(50).toByteArray()
+            val encoded =
+                java.io.ByteArrayOutputStream().also { out ->
+                    java.util.zip.GZIPOutputStream(out).use { it.write(plain) }
+                }.toByteArray()
+            // CouchDB's digest covers the bytes it stores, which are gzip-encoded.
+            val stored = stub("note.txt", attachmentDigest(encoded), plain.size)
+            couch.on("GET", "/db/_changes") { FakeCouch.json(changes("""{"seq":"1","id":"doc","changes":[{"rev":"1-a"}]}""")) }
+            couch.on("POST", "/db/_bulk_get") { FakeCouch.json(bulkGet("doc", doc("doc", "1-a", stored))) }
+            couch.on("GET", "/db/doc/note.txt") {
+                MockResponse().setHeader("Content-Encoding", "gzip").setBody(Buffer().write(encoded))
+            }
+
+            val phone = device()
+            val result = phone.replicator(remote()).sync()
+            assertEquals(0, result.pullErrors)
+            assertContentEquals(plain, phone.getAttachment("doc", "note.txt"))
+        }
+
+    @Test
     fun `large attachments are sent as multipart parts with a matching length`() =
         runBlocking {
             val bytes = ByteArray(3000) { (it % 251).toByte() }
