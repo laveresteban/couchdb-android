@@ -23,6 +23,8 @@ jobs:
         run: for i in $(seq 30); do curl -sf localhost:5984/_up && break; sleep 2; done
       - name: Core tests (unit + replication against CouchDB)
         run: ./gradlew :sync-core:test
+        env:
+          ANDROID_HOME: "" # runners ship an SDK; keep the Android module out of JVM jobs
 
   conformance:
     runs-on: ubuntu-latest
@@ -49,6 +51,8 @@ jobs:
         run: for i in $(seq 30); do curl -sf localhost:5984/_up && break; sleep 2; done
       - name: Gauge conformance specs
         run: scripts/conformance.sh couchdb-sdk-generator
+        env:
+          ANDROID_HOME: ""
 
   android:
     runs-on: ubuntu-latest
