@@ -14,22 +14,39 @@ class AndroidSqlDriver private constructor(
     private val begin: () -> Unit,
     private val success: () -> Unit,
     private val end: () -> Unit,
+    private val closeDb: () -> Unit,
 ) : SqlDriver {
     constructor(db: android.database.sqlite.SQLiteDatabase) :
-        this(db::execSQL, db::rawQuery, db::beginTransaction, db::setTransactionSuccessful, db::endTransaction)
+        this(db::execSQL, db::rawQuery, db::beginTransaction, db::setTransactionSuccessful, db::endTransaction, db::close)
 
     constructor(db: net.zetetic.database.sqlcipher.SQLiteDatabase) :
-        this(db::execSQL, { sql, args -> db.rawQuery(sql, args) }, db::beginTransaction, db::setTransactionSuccessful, db::endTransaction)
+        this(
+            db::execSQL,
+            { sql, args -> db.rawQuery(sql, args) },
+            db::beginTransaction,
+            db::setTransactionSuccessful,
+            db::endTransaction,
+            db::close,
+        )
 
-    override fun execute(sql: String, args: List<Any?>) = exec(sql, args.toTypedArray())
+    override fun execute(
+        sql: String,
+        args: List<Any?>,
+    ) = exec(sql, args.toTypedArray())
 
-    override fun <T> query(sql: String, args: List<Any?>, map: (SqlRow) -> T): List<T> =
+    override fun <T> query(
+        sql: String,
+        args: List<Any?>,
+        map: (SqlRow) -> T,
+    ): List<T> =
         // rawQuery only takes strings; SQLite converts them back for INTEGER/REAL columns.
         rawQuery(sql, args.map { it?.toString() }.toTypedArray()).use { c ->
-            val row = object : SqlRow {
-                override fun string(index: Int): String? = if (c.isNull(index)) null else c.getString(index)
-                override fun long(index: Int): Long? = if (c.isNull(index)) null else c.getLong(index)
-            }
+            val row =
+                object : SqlRow {
+                    override fun string(index: Int): String? = if (c.isNull(index)) null else c.getString(index)
+
+                    override fun long(index: Int): Long? = if (c.isNull(index)) null else c.getLong(index)
+                }
             buildList { while (c.moveToNext()) add(map(row)) }
         }
 
@@ -41,4 +58,6 @@ class AndroidSqlDriver private constructor(
             end()
         }
     }
+
+    override fun close() = closeDb()
 }

@@ -24,14 +24,15 @@ class ChangesFeedTest {
     private val db = RemoteDb("$server/feed-test-${UUID.randomUUID().toString().take(8)}", Auth.Basic("admin", "password"))
 
     @Test
-    fun `transient errors are retried with backoff, then give up`() = runBlocking {
-        val down = RemoteDb("http://127.0.0.1:1/nothing")
-        val sleeps = mutableListOf<Long>()
-        val feed = ChangesFeed(down, maxRetries = 3, maxBackoffMs = 4_000, sleep = { sleeps += it })
-        assertFailsWith<IOException> { feed.asFlow().first() }
-        assertEquals(3, sleeps.size)
-        assertTrue(sleeps.all { it in 250..4_000 }, "$sleeps")
-    }
+    fun `transient errors are retried with backoff, then give up`() =
+        runBlocking {
+            val down = RemoteDb("http://127.0.0.1:1/nothing")
+            val sleeps = mutableListOf<Long>()
+            val feed = ChangesFeed(down, maxRetries = 3, maxBackoffMs = 4_000, sleep = { sleeps += it })
+            assertFailsWith<IOException> { feed.asFlow().first() }
+            assertEquals(3, sleeps.size)
+            assertTrue(sleeps.all { it in 250..4_000 }, "$sleeps")
+        }
 
     @Test
     fun `only network errors, 429 and 5xx are transient`() {
@@ -57,46 +58,64 @@ class ChangesFeedTest {
 
     private suspend fun save(id: String) = db.request("PUT", listOf(id), body = buildJsonObject { put("v", 1) })
 
-    private suspend fun readUntil(feed: ChangesFeed, id: String) = withTimeout(10_000) {
+    private suspend fun readUntil(
+        feed: ChangesFeed,
+        id: String,
+    ) = withTimeout(10_000) {
         feed.asFlow().collect { if (it.id == id) feed.stop() }
     }
 
     @Test
-    fun `longpoll reader resumes from its checkpoint`() = runBlocking {
-        save("a")
-        readUntil(ChangesFeed(db, checkpoint = "r"), "a")
-        save("c")
-        assertEquals("c", withTimeout(10_000) { ChangesFeed(db, checkpoint = "r").asFlow().first().id })
-    }
+    fun `longpoll reader resumes from its checkpoint`() =
+        runBlocking {
+            save("a")
+            readUntil(ChangesFeed(db, checkpoint = "r"), "a")
+            save("c")
+            assertEquals("c", withTimeout(10_000) { ChangesFeed(db, checkpoint = "r").asFlow().first().id })
+        }
 
     @Test
-    fun `continuous reader resumes from its checkpoint`() = runBlocking {
-        save("a")
-        readUntil(ChangesFeed(db, checkpoint = "c", continuous = true), "a")
-        save("c")
-        assertEquals("c", withTimeout(10_000) { ChangesFeed(db, checkpoint = "c", continuous = true).asFlow().first().id })
-    }
+    fun `continuous reader resumes from its checkpoint`() =
+        runBlocking {
+            save("a")
+            readUntil(ChangesFeed(db, checkpoint = "c", continuous = true), "a")
+            save("c")
+            assertEquals("c", withTimeout(10_000) { ChangesFeed(db, checkpoint = "c", continuous = true).asFlow().first().id })
+        }
 
     @Test
-    fun `continuous feed delivers changes made while connected`() = runBlocking {
-        val feed = ChangesFeed(db, since = "now", continuous = true)
-        val seen = kotlinx.coroutines.CompletableDeferred<String>()
-        val job = launch(kotlinx.coroutines.Dispatchers.IO) { feed.asFlow().collect { seen.complete(it.id); feed.stop() } }
-        kotlinx.coroutines.delay(500)
-        save("live")
-        assertEquals("live", withTimeout(10_000) { seen.await() })
-        withTimeout(10_000) { job.join() }
-    }
+    fun `continuous feed delivers changes made while connected`() =
+        runBlocking {
+            val feed = ChangesFeed(db, since = "now", continuous = true)
+            val seen = kotlinx.coroutines.CompletableDeferred<String>()
+            val job =
+                launch(kotlinx.coroutines.Dispatchers.IO) {
+                    feed.asFlow().collect {
+                        seen.complete(it.id)
+                        feed.stop()
+                    }
+                }
+            kotlinx.coroutines.delay(500)
+            save("live")
+            assertEquals("live", withTimeout(10_000) { seen.await() })
+            withTimeout(10_000) { job.join() }
+        }
 
     @Test
-    fun `continuous reader saves its place on stop even mid-batch`() = runBlocking {
-        save("a")
-        save("b")
-        // Shards don't promise an order, so stop after whichever change comes first.
-        val feed = ChangesFeed(db, checkpoint = "s", continuous = true, batchSize = 100)
-        var first: String? = null
-        withTimeout(10_000) { feed.asFlow().collect { first = it.id; feed.stop() } }
-        val next = withTimeout(10_000) { ChangesFeed(db, checkpoint = "s", continuous = true).asFlow().first().id }
-        assertEquals(setOf("a", "b"), setOf(first, next))
-    }
+    fun `continuous reader saves its place on stop even mid-batch`() =
+        runBlocking {
+            save("a")
+            save("b")
+            // Shards don't promise an order, so stop after whichever change comes first.
+            val feed = ChangesFeed(db, checkpoint = "s", continuous = true, batchSize = 100)
+            var first: String? = null
+            withTimeout(10_000) {
+                feed.asFlow().collect {
+                    first = it.id
+                    feed.stop()
+                }
+            }
+            val next = withTimeout(10_000) { ChangesFeed(db, checkpoint = "s", continuous = true).asFlow().first().id }
+            assertEquals(setOf("a", "b"), setOf(first, next))
+        }
 }

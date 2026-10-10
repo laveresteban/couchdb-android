@@ -1,4 +1,5 @@
 name: CI
+
 on:
   push:
     branches: [main]
@@ -26,13 +27,18 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: "17" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
       - uses: gradle/actions/setup-gradle@v4
+      - name: Install PouchDB for the interop test
+        run: npm ci
+        working-directory: interop
       - name: Wait for CouchDB
         run: for i in $(seq 30); do curl -sf localhost:5984/_up && break; sleep 2; done
-      - name: Core tests (unit + replication against CouchDB)
-        run: ./gradlew :sync-core:test
+      - name: Lint and test sync-core (CouchDB replication, PouchDB interop)
+        run: ./gradlew :sync-core:ktlintCheck :sync-core:test :sync-core:koverVerify
         env:
-          ANDROID_HOME: "" # runners ship an SDK; keep the Android module out of JVM jobs
+          ANDROID_HOME: "" # runners ship an SDK; keep the Android modules out of JVM jobs
 
   conformance:
     runs-on: ubuntu-latest
@@ -58,7 +64,7 @@ jobs:
           gauge-plugins: java
       - name: Wait for CouchDB
         run: for i in $(seq 30); do curl -sf localhost:5984/_up && break; sleep 2; done
-      - name: Gauge conformance specs
+      - name: Gauge conformance specs (shared and SDK)
         run: scripts/conformance.sh couchdb-sdk-generator
         env:
           ANDROID_HOME: ""
@@ -75,8 +81,23 @@ jobs:
           # The default also installs 'tools', which newer SDK tooling no longer has.
           packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build Android library
-        run: ./gradlew :android:assembleRelease
+      - name: Lint and format check
+        run: ./gradlew ktlintCheck :android:lintRelease :example-notes:lintDebug
+      - name: Robolectric unit tests and coverage
+        run: ./gradlew :android:testDebugUnitTest :android:koverVerify
+      - name: Build library and example app
+        run: ./gradlew :android:assembleRelease :example-notes:assembleDebug
+
+  device:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
       - name: Start CouchDB for device tests
         run: docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.4
       - name: Enable KVM

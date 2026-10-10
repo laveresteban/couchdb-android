@@ -16,8 +16,7 @@ data class Rev(val gen: Int, val hash: String) : Comparable<Rev> {
     override fun toString() = "$gen-$hash"
 
     /** CouchDB orders revisions by generation, then by hash string. */
-    override fun compareTo(other: Rev): Int =
-        compareValuesBy(this, other, Rev::gen, Rev::hash)
+    override fun compareTo(other: Rev): Int = compareValuesBy(this, other, Rev::gen, Rev::hash)
 
     companion object {
         fun parse(rev: String): Rev {
@@ -35,5 +34,4 @@ internal val META_FIELDS = setOf("_id", "_rev", "_deleted", "_revisions", "_conf
 
 internal fun JsonObject.withoutMeta() = JsonObject(filterKeys { it !in META_FIELDS })
 
-internal fun md5Hex(s: String): String =
-    MessageDigest.getInstance("MD5").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
+internal fun md5Hex(s: String): String = MessageDigest.getInstance("MD5").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }

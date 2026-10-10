@@ -20,6 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.UUID
+import kotlin.test.assertFailsWith
 
 /** Runs on an emulator or device; CI points it at CouchDB on the host. */
 @RunWith(AndroidJUnit4::class)
@@ -30,49 +31,71 @@ class DeviceTest {
     private val remote = RemoteDb("$couch/$name", Auth.Basic("admin", "password"))
 
     @After
-    fun tearDown() = runBlocking {
-        CouchLiteAndroid.destroy(context, name)
-        runCatching { remote.destroy() }
-        Unit
-    }
+    fun tearDown() =
+        runBlocking {
+            CouchLiteAndroid.destroy(context, name)
+            runCatching { remote.destroy() }
+            Unit
+        }
 
     @Test
-    fun platformSqliteStoresAndQueries() = runBlocking {
-        val db = CouchLiteAndroid.open(context, name)
-        db.createIndex("n")
-        repeat(20) { db.put("d$it", buildJsonObject { put("n", it) }) }
-        val hits = db.find(Query(buildJsonObject { put("n", buildJsonObject { put("\$gte", 15) }) }))
-        assertEquals(5, hits.size)
-    }
+    fun platformSqliteStoresAndQueries() =
+        runBlocking {
+            val db = CouchLiteAndroid.open(context, name)
+            db.createIndex("n")
+            repeat(20) { db.put("d$it", buildJsonObject { put("n", it) }) }
+            val hits = db.find(Query(buildJsonObject { put("n", buildJsonObject { put("\$gte", 15) }) }))
+            assertEquals(5, hits.size)
+        }
 
     @Test
-    fun encryptedDatabaseReopensAndHidesData() = runBlocking {
-        val db = CouchLiteAndroid.open(context, name, encrypted = true)
-        val rev = db.put("secret", buildJsonObject { put("pin", "4321") })
-        db.putAttachment("secret", rev, "scan.bin", "application/octet-stream", "attachment-plaintext".toByteArray())
+    fun encryptedDatabaseReopensAndHidesData() =
+        runBlocking {
+            val db = CouchLiteAndroid.open(context, name, encrypted = true)
+            val rev = db.put("secret", buildJsonObject { put("pin", "4321") })
+            db.putAttachment("secret", rev, "scan.bin", "application/octet-stream", "attachment-plaintext".toByteArray())
 
-        val file = context.getDatabasePath("$name.couchlite.db")
-        assertFalse(String(file.readBytes(), Charsets.ISO_8859_1).contains("4321"))
-        val blobs = java.io.File(context.noBackupFilesDir, "couchlite/$name").listFiles()!!
-        assertTrue(blobs.none { String(it.readBytes(), Charsets.ISO_8859_1).contains("attachment-plaintext") })
+            val file = context.getDatabasePath("$name.couchlite.db")
+            assertFalse(String(file.readBytes(), Charsets.ISO_8859_1).contains("4321"))
+            val blobs = java.io.File(context.noBackupFilesDir, "couchlite/$name").listFiles()!!
+            assertTrue(blobs.none { String(it.readBytes(), Charsets.ISO_8859_1).contains("attachment-plaintext") })
 
-        assertEquals("4321", db.get("secret")!!.body["pin"]!!.jsonPrimitive.content)
-        assertArrayEquals("attachment-plaintext".toByteArray(), db.getAttachment("secret", "scan.bin"))
-    }
+            assertEquals("4321", db.get("secret")!!.body["pin"]!!.jsonPrimitive.content)
+            assertArrayEquals("attachment-plaintext".toByteArray(), db.getAttachment("secret", "scan.bin"))
+        }
 
     @Test
-    fun workerSyncsWithServer() = runBlocking {
-        remote.ensureExists(create = true)
-        CouchLiteAndroid.remotes = { RemoteDb("$couch/$it", Auth.Basic("admin", "password")) }
-        val db = CouchLiteAndroid.open(context, name)
-        db.put("from-phone", buildJsonObject { put("v", 1) })
+    fun closedEncryptedDatabaseReopensWithItsData() =
+        runBlocking<Unit> {
+            CouchLiteAndroid.open(context, name, encrypted = true).put("kept", buildJsonObject { put("v", 1) })
+            CouchLiteAndroid.close(name)
+            assertEquals(1, CouchLiteAndroid.open(context, name, encrypted = true).get("kept")!!.body["v"]!!.jsonPrimitive.content.toInt())
+        }
 
-        val worker = TestListenableWorkerBuilder<SyncWorker>(context)
-            .setInputData(workDataOf("db" to name))
-            .build()
-        val result = worker.doWork()
-        assertTrue(result is ListenableWorker.Result.Success)
-        assertEquals(1, result.outputData.getInt("pushed", -1))
-        assertTrue(remote.request("GET", listOf("from-phone")) != null)
-    }
+    @Test
+    fun lostKeyIsReportedNotSilentlyReset() =
+        runBlocking<Unit> {
+            CouchLiteAndroid.open(context, name, encrypted = true)
+            CouchLiteAndroid.close(name)
+            context.getSharedPreferences("couchlite.keys", android.content.Context.MODE_PRIVATE).edit().putString(name, "bogus").commit()
+            assertFailsWith<KeyLostException> { CouchLiteAndroid.open(context, name, encrypted = true) }
+        }
+
+    @Test
+    fun workerSyncsWithServer() =
+        runBlocking {
+            remote.ensureExists(create = true)
+            CouchLiteAndroid.remotes = { RemoteDb("$couch/$it", Auth.Basic("admin", "password")) }
+            val db = CouchLiteAndroid.open(context, name)
+            db.put("from-phone", buildJsonObject { put("v", 1) })
+
+            val worker =
+                TestListenableWorkerBuilder<SyncWorker>(context)
+                    .setInputData(workDataOf("db" to name))
+                    .build()
+            val result = worker.doWork()
+            assertTrue(result is ListenableWorker.Result.Success)
+            assertEquals(1, result.outputData.getInt("pushed", -1))
+            assertTrue(remote.request("GET", listOf("from-phone")) != null)
+        }
 }

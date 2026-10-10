@@ -7,7 +7,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,19 +15,24 @@ import kotlin.test.assertTrue
 
 class QueryTest {
     private fun json(s: String) = Json.parseToJsonElement(s).jsonObject
+
     private fun sel(s: String) = json(s)
 
-    private val people = mapOf(
-        "ann" to """{"name":"ann","age":31,"tags":["admin","dev"],"address":{"city":"Oslo"}}""",
-        "bob" to """{"name":"bob","age":25,"tags":["dev"],"address":{"city":"Lima"}}""",
-        "cat" to """{"name":"cat","age":40,"active":false}""",
-        "dan" to """{"name":"dan","age":"unknown"}""",
-    )
+    private val people =
+        mapOf(
+            "ann" to """{"name":"ann","age":31,"tags":["admin","dev"],"address":{"city":"Oslo"}}""",
+            "bob" to """{"name":"bob","age":25,"tags":["dev"],"address":{"city":"Lima"}}""",
+            "cat" to """{"name":"cat","age":40,"active":false}""",
+            "dan" to """{"name":"dan","age":"unknown"}""",
+        )
 
     private fun store() = SqlLocalStore(JdbcSqlDriver()).also { s -> people.forEach { (id, b) -> s.put(id, json(b), null) } }
 
-    private fun ids(store: SqlLocalStore, selector: String, sort: List<Pair<String, Boolean>> = emptyList()) =
-        store.find(Query(sel(selector), sort)).map { it.id }
+    private fun ids(
+        store: SqlLocalStore,
+        selector: String,
+        sort: List<Pair<String, Boolean>> = emptyList(),
+    ) = store.find(Query(sel(selector), sort)).map { it.id }
 
     @Test
     fun `operators match like Mango`() {
@@ -50,13 +54,14 @@ class QueryTest {
     @Test
     fun `find with and without an index gives the same results`() {
         val s = store()
-        val queries = listOf(
-            """{"age":{"${'$'}gte":30}}""",
-            """{"age":25}""",
-            """{"name":{"${'$'}in":["bob","dan"]}}""",
-            """{"tags":{"${'$'}in":["admin"]}}""",
-            """{"age":{"${'$'}lt":"z"}}""",
-        )
+        val queries =
+            listOf(
+                """{"age":{"${'$'}gte":30}}""",
+                """{"age":25}""",
+                """{"name":{"${'$'}in":["bob","dan"]}}""",
+                """{"tags":{"${'$'}in":["admin"]}}""",
+                """{"age":{"${'$'}lt":"z"}}""",
+            )
         val before = queries.map { ids(s, it) }
         s.createIndex("age")
         s.createIndex("name")
@@ -90,15 +95,16 @@ class QueryTest {
     }
 
     @Test
-    fun `observe re-runs the query on change`() = runBlocking {
-        val db = CouchLite(store())
-        val q = Query(sel("""{"age":{"${'$'}gte":40,"${'$'}type":"number"}}"""))
-        val seen = mutableListOf<List<String>>()
-        val job = launch { db.observe(q).take(2).toList().forEach { seen += it.map(Doc::id) } }
-        kotlinx.coroutines.delay(300) // let the collector subscribe
-        db.put("eve", json("""{"age":44}"""))
-        withTimeout(5_000) { job.join() }
-        assertEquals(listOf(listOf("cat"), listOf("cat", "eve")), seen)
-        assertEquals(listOf("cat", "eve"), db.observe(q).first().map { it.id })
-    }
+    fun `observe re-runs the query on change`() =
+        runBlocking {
+            val db = CouchLite(store())
+            val q = Query(sel("""{"age":{"${'$'}gte":40,"${'$'}type":"number"}}"""))
+            val seen = mutableListOf<List<String>>()
+            val job = launch { db.observe(q).take(2).toList().forEach { seen += it.map(Doc::id) } }
+            kotlinx.coroutines.delay(300) // let the collector subscribe
+            db.put("eve", json("""{"age":44}"""))
+            withTimeout(5_000) { job.join() }
+            assertEquals(listOf(listOf("cat"), listOf("cat", "eve")), seen)
+            assertEquals(listOf("cat", "eve"), db.observe(q).first().map { it.id })
+        }
 }
