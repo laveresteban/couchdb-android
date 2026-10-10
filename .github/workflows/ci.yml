@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       couchdb:
-        image: couchdb:3
+        image: couchdb:3.4
         ports: ["5984:5984"]
         env:
           COUCHDB_USER: admin
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       couchdb:
-        image: couchdb:3
+        image: couchdb:3.4
         ports: ["5984:5984"]
         env:
           COUCHDB_USER: admin
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "17" }
       - uses: gradle/actions/setup-gradle@v4
-      - uses: getgauge/setup-gauge@master
+      - uses: getgauge/setup-gauge@159e01e975eeae8bd1a097017590fefbc36e2d4e # master, Oct 2026 (no tags)
         with:
           gauge-plugins: java
       - name: Wait for CouchDB
@@ -68,7 +68,7 @@ jobs:
       - name: Build Android library
         run: ./gradlew :android:assembleRelease
       - name: Start CouchDB for device tests
-        run: docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3
+        run: docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.4
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

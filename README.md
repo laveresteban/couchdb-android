@@ -41,6 +41,10 @@ notes.observe(pinned).collect { render(it) }   // re-runs on local edits and syn
 SyncScheduler.syncNow(this, "notes", encrypted = true)
 lifecycleScope.launch { notes.liveSync(CouchLiteAndroid.remotes!!("notes")) }
 
+// Revisions the server refused (e.g. validate_doc_update) are reported, not retried forever
+val result = notes.replicator(remote).sync()
+result.pushFailures.forEach { log("not synced: ${it.id} ${it.error} ${it.reason}") }
+
 // Sync only part of the database
 val mine = SyncFilter.Selector(buildJsonObject { put("owner", userId) })
 notes.replicator(remote, filter = mine).sync()
@@ -64,8 +68,9 @@ feed.asFlow().collect { change -> notify(change.id) }   // call feed.stop() to e
 ```
 
 With a `checkpoint` name, the position is saved in `_local/<name>` on the
-server after each change, so a restarted reader resumes where the last one
-stopped (at-least-once). Network errors, 429 and 5xx are retried with
+server (after each longpoll batch; every `batchSize` changes and on `stop()`
+for continuous), so a restarted reader resumes where the last one stopped
+(at-least-once). Network errors, 429 and 5xx are retried with
 jittered backoff that honors `Retry-After`. Longpoll is the default;
 `continuous = true` keeps one streaming connection open with heartbeats.
 
@@ -80,8 +85,14 @@ jittered backoff that honors `Retry-After`. Longpoll is the default;
   `_bulk_get?revs=true&attachments=true` with `atts_since` set to the revs
   we have, so only new attachment content is downloaded.
 - **Push:** local changes since checkpoint → `_revs_diff` →
-  `_bulk_docs` with `new_edits: false` and `_revisions`. Attachments the
-  server already has (per `possible_ancestors`) go as stubs, the rest inline.
+  `_bulk_docs` with `new_edits: false` and `_revisions`, split so no request
+  body exceeds `maxBatchBytes` (4 MB). Attachments the server already has (per
+  `possible_ancestors`) go as stubs, the rest inline. Revisions the server
+  refuses are returned in `SyncResult.pushFailures` and skipped, like
+  CouchDB's own `doc_write_failures`.
+- **Errors:** network errors, 429 and 5xx are retried with backoff (live sync
+  and `SyncWorker`); 401 and other 4xx stop sync. Syncs of the same database
+  take turns, so a background sync and live sync can't race.
 - **Filters:** pull uses the server's `_doc_ids` / `_selector` filter, push
   checks the same filter locally. Each filter gets its own checkpoint.
 - Checkpoints are written to both sides (`_local/<id>` on the server). If they
@@ -108,7 +119,7 @@ Attachments are kept under `noBackupFilesDir`.
 ## Tests
 
 ```sh
-docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3
+docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.4
 ./gradlew :sync-core:test                       # unit + replication tests
 scripts/conformance.sh ../couchdb-sdk-generator  # Gauge specs (needs gauge + java plugin)
 ./gradlew :android:connectedDebugAndroidTest     # on a device/emulator, CouchDB at 10.0.2.2
@@ -116,7 +127,8 @@ scripts/conformance.sh ../couchdb-sdk-generator  # Gauge specs (needs gauge + ja
 
 Replication tests are skipped if no CouchDB is reachable at `COUCHDB_URL`.
 The conformance module runs the `documents`, `changes`, `sync` and
-`databases` specs.
+`databases` specs, and fails if any scenario is skipped. With Docker only:
+`docker compose run --rm gauge-android` from couchdb-sdk-generator.
 
 ## Limits
 

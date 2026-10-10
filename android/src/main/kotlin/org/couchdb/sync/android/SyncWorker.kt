@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import org.couchdb.sync.AuthRequiredException
+import org.couchdb.sync.ChangesFeed
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -23,11 +24,19 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val db = CouchLiteAndroid.open(applicationContext, name, inputData.getBoolean(KEY_ENCRYPTED, false))
         return try {
             val r = db.replicator(CouchLiteAndroid.remote(name), CouchLiteAndroid.filters?.invoke(name)).sync()
-            Result.success(workDataOf("pulled" to r.pulled, "pushed" to r.pushed))
+            Result.success(
+                workDataOf(
+                    "pulled" to r.pulled,
+                    "pushed" to r.pushed,
+                    "push_failures" to r.pushFailures.size,
+                    "pull_errors" to r.pullErrors,
+                ),
+            )
         } catch (e: AuthRequiredException) {
             Result.failure(workDataOf("error" to "auth_required"))
         } catch (e: IOException) {
-            Result.retry()
+            // Network errors, 429 and 5xx clear up; other HTTP errors (403, 404) won't.
+            if (ChangesFeed.isTransient(e)) Result.retry() else Result.failure(workDataOf("error" to e.message))
         }
     }
 

@@ -1,5 +1,8 @@
 package org.couchdb.sync
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -150,6 +153,45 @@ class ReplicationTest {
 
     private fun status(method: String, path: String): Int =
         http.newCall(request(method, path, null)).execute().use { it.code }
+
+    @Test
+    fun `refused revisions are reported and don't block later pushes`() = runBlocking {
+        rest(
+            "PUT", "/_design/guard",
+            buildJsonObject {
+                put("validate_doc_update", "function(doc) { if (doc.v === 'bad') throw({forbidden: 'no bad docs'}); }")
+            },
+        )
+        val phone = device()
+        phone.put("good", body("ok"))
+        phone.put("bad", body("bad"))
+        val first = phone.replicator(remote()).sync()
+        assertEquals(1, first.pushed)
+        assertEquals(listOf("bad" to "forbidden"), first.pushFailures.map { it.id to it.error })
+        phone.put("later", body("ok"))
+        // The refused revision isn't retried forever; later writes still go out.
+        assertEquals(SyncResult(pulled = 0, pushed = 1), phone.replicator(remote()).sync().copy(pulled = 0))
+        assertEquals("ok", rest("GET", "/later")["v"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `pushes are split by size`() = runBlocking {
+        val phone = device()
+        repeat(5) { phone.put("d$it", body("x".repeat(1000))) }
+        val repl = Replicator(phone.store, remote(), phone.blobs, maxBatchBytes = 2_500)
+        assertEquals(5, repl.sync().pushed)
+        assertEquals(5, rest("GET", "")["doc_count"]!!.jsonPrimitive.content.toInt())
+    }
+
+    @Test
+    fun `concurrent syncs of one store take turns`() = runBlocking {
+        val phone = device()
+        repeat(20) { phone.put("d$it", body("1")) }
+        val results = (1..3).map {
+            async(Dispatchers.IO) { phone.replicator(remote()).sync() }
+        }.awaitAll()
+        assertEquals(20, results.sumOf { it.pushed })
+    }
 
     private fun rest(method: String, path: String, json: JsonObject? = null): JsonObject =
         http.newCall(request(method, path, json)).execute().use {

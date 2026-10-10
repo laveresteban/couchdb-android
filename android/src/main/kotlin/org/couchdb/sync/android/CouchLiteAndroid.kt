@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
  * ```
  */
 object CouchLiteAndroid {
-    private val open = ConcurrentHashMap<String, CouchLite>()
+    private val open = ConcurrentHashMap<String, Pair<CouchLite, Boolean>>()
 
     /**
      * Builds the remote for a database name. Background sync ([SyncWorker])
@@ -40,9 +40,16 @@ object CouchLiteAndroid {
      * can't change after it's created; [destroy] it and sync again instead.
      *
      * Attachments live under `noBackupFilesDir`, so they aren't copied to
-     * cloud backups.
+     * cloud backups. Opening an already-open database with a different
+     * [encrypted] value throws.
      */
-    fun open(context: Context, name: String, encrypted: Boolean = false): CouchLite = open.getOrPut(name) {
+    fun open(context: Context, name: String, encrypted: Boolean = false): CouchLite {
+        val (db, wasEncrypted) = open.getOrPut(name) { create(context, name, encrypted) to encrypted }
+        check(wasEncrypted == encrypted) { "$name is already open with encrypted = $wasEncrypted" }
+        return db
+    }
+
+    private fun create(context: Context, name: String, encrypted: Boolean): CouchLite {
         val app = context.applicationContext
         val dbFile = app.getDatabasePath("$name.couchlite.db").also { it.parentFile?.mkdirs() }
         val blobDir = File(app.noBackupFilesDir, "couchlite/$name")
@@ -51,12 +58,11 @@ object CouchLiteAndroid {
             val secret = KeystorePassphrase.get(app, name)
             val db = net.zetetic.database.sqlcipher.SQLiteDatabase.openOrCreateDatabase(dbFile, secret, null, null)
             db.enableWriteAheadLogging()
-            CouchLite(SqlLocalStore(AndroidSqlDriver(db)), FileBlobStore(blobDir, secret))
-        } else {
-            val db = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
-            db.enableWriteAheadLogging()
-            CouchLite(SqlLocalStore(AndroidSqlDriver(db)), FileBlobStore(blobDir))
+            return CouchLite(SqlLocalStore(AndroidSqlDriver(db)), FileBlobStore(blobDir, secret))
         }
+        val db = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+        db.enableWriteAheadLogging()
+        return CouchLite(SqlLocalStore(AndroidSqlDriver(db)), FileBlobStore(blobDir))
     }
 
     /** Deletes a local database, its attachments and its key. The server copy is untouched. */

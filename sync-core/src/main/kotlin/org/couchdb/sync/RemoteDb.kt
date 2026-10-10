@@ -67,6 +67,9 @@ data class RevRequest(val id: String, val rev: String? = null, val attsSince: Li
 
 data class RevsDiffEntry(val missing: List<String>, val possibleAncestors: List<String>)
 
+/** A revision the server refused to store, e.g. `forbidden` from `validate_doc_update`. */
+data class WriteFailure(val id: String, val rev: String?, val error: String, val reason: String?)
+
 /** Limits sync to part of a database. Pull filters on the server, push filters locally. */
 sealed interface SyncFilter {
     data class DocIds(val ids: List<String>) : SyncFilter
@@ -77,7 +80,7 @@ sealed interface SyncFilter {
  * The replication subset of the CouchDB API, matching these
  * couchdb-openapi operations: getDatabaseInformation, putDatabase,
  * getChanges, postRevsDiff, postBulkGet, postBulkDocs (new_edits=false),
- * getLocalDocument and putLocalDocument.
+ * getLocalDocument, putLocalDocument and deleteLocalDocument.
  */
 class RemoteDb(
     dbUrl: String,
@@ -89,9 +92,13 @@ class RemoteDb(
     @Volatile private var sessionCookie: String? = null
 
     private val http = client.newBuilder()
-        .readTimeout(90, TimeUnit.SECONDS) // longer than the longpoll timeout
+        .readTimeout(90, TimeUnit.SECONDS)
         .addInterceptor(AuthInterceptor())
         .build()
+
+    /** A client whose read timeout outlasts a server-side wait of [waitMs] (longpoll or heartbeat). */
+    private fun waiting(waitMs: Long): OkHttpClient =
+        if (waitMs + 30_000 <= 90_000) http else http.newBuilder().readTimeout(waitMs + 30_000, TimeUnit.MILLISECONDS).build()
 
     /** Returns the database's info, creating it first if [create] is set and it's missing. */
     suspend fun ensureExists(create: Boolean): JsonObject {
@@ -114,7 +121,7 @@ class RemoteDb(
                 addQueryParameter("timeout", longpollMs.toString())
             }
         }
-        val res = call(if (body == null) "GET" else "POST", u, body)!!.jsonObject
+        val res = call(if (body == null) "GET" else "POST", u, body, client = waiting(longpollMs ?: 0))!!.jsonObject
         return ChangesPage(
             results = res["results"]!!.jsonArray.map { parseChange(it.jsonObject) },
             lastSeq = res["last_seq"]!!.seqString(),
@@ -134,7 +141,7 @@ class RemoteDb(
         }
         val req = Request.Builder().url(u).header("Accept", "application/json")
             .method(if (body == null) "GET" else "POST", body?.toString()?.toRequestBody(JSON)).build()
-        val call = http.newCall(req)
+        val call = waiting(heartbeatMs).newCall(req)
         // The read below blocks on the socket; closing the flow cancels the
         // call, which unblocks it. Heartbeats would otherwise keep it alive.
         launch(Dispatchers.IO) {
@@ -232,24 +239,31 @@ class RemoteDb(
         }
     }
 
-    /** Writes revisions as-is, keeping their ids and history (`new_edits: false`). */
-    suspend fun bulkDocsNoNewEdits(docs: List<JsonObject>) {
-        if (docs.isEmpty()) return
+    /**
+     * Writes revisions as-is, keeping their ids and history (`new_edits: false`).
+     * Returns the revisions the server refused (for example `forbidden` from a
+     * `validate_doc_update` function); the rest were stored.
+     */
+    suspend fun bulkDocsNoNewEdits(docs: List<JsonObject>): List<WriteFailure> {
+        if (docs.isEmpty()) return emptyList()
         val body = buildJsonObject { put("new_edits", false); put("docs", JsonArray(docs)) }
         val res = call("POST", url.newBuilder().addPathSegment("_bulk_docs").build(), body)!!.jsonArray
         // With new_edits=false CouchDB only lists failures.
-        res.firstOrNull { it.jsonObject["error"] != null }?.let {
-            val o = it.jsonObject
-            throw CouchException(500, o.str("error"), "${o.str("id")}: ${o.str("reason")}")
+        return res.map { it.jsonObject }.filter { it["error"] != null }.map {
+            WriteFailure(it.str("id").orEmpty(), it.str("rev"), it.str("error")!!, it.str("reason"))
         }
     }
 
     suspend fun getLocal(id: String): JsonObject? =
         call("GET", localUrl(id), null, allow404 = true)?.jsonObject
 
-    suspend fun putLocal(id: String, body: JsonObject) {
-        call("PUT", localUrl(id), body)
-    }
+    /** Writes `_local/<id>` and returns its new `_rev`. */
+    suspend fun putLocal(id: String, body: JsonObject): String =
+        call("PUT", localUrl(id), body)!!.jsonObject.str("rev")!!
+
+    /** Deletes `_local/<id>`. Returns false if it didn't exist. */
+    suspend fun deleteLocal(id: String, rev: String): Boolean =
+        call("DELETE", localUrl(id).newBuilder().addQueryParameter("rev", rev).build(), null, allow404 = true) != null
 
     /**
      * Any other CouchDB call, relative to this database. [path] segments are
@@ -280,12 +294,13 @@ class RemoteDb(
         body: JsonElement?,
         allow404: Boolean = false,
         allow412: Boolean = false,
+        client: OkHttpClient = http,
     ): JsonElement? {
         val req = Request.Builder().url(u)
             .header("Accept", "application/json")
             .method(method, body?.toString()?.toRequestBody(JSON) ?: if (method == "PUT" || method == "POST") ByteArray(0).toRequestBody(JSON) else null)
             .build()
-        http.newCall(req).await().use { res ->
+        client.newCall(req).await().use { res ->
             val text = res.body?.string().orEmpty()
             if (res.isSuccessful) return Json.parseToJsonElement(text)
             if (allow404 && res.code == 404) return null
@@ -307,18 +322,27 @@ class RemoteDb(
                 chain.request().newBuilder().header("Authorization", Credentials.basic(a.user, a.password)).build(),
             )
             is Auth.Session -> {
-                val cookie = sessionCookie ?: login(chain, a)
+                val cookie = sessionCookie ?: login(chain, a, stale = null)
                 val res = chain.proceed(chain.request().newBuilder().header("Cookie", cookie).build())
                 if (res.code != 401) {
                     res
                 } else {
                     res.close()
-                    chain.proceed(chain.request().newBuilder().header("Cookie", login(chain, a)).build())
+                    chain.proceed(chain.request().newBuilder().header("Cookie", login(chain, a, stale = cookie)).build())
                 }
             }
         }
 
-        private fun login(chain: Interceptor.Chain, a: Auth.Session): String {
+        /**
+         * Logs in unless another request already replaced [stale] with a fresh
+         * cookie, so a burst of requests after expiry logs in once.
+         */
+        private fun login(chain: Interceptor.Chain, a: Auth.Session, stale: String?): String = synchronized(this) {
+            sessionCookie?.takeIf { it != stale }?.let { return it }
+            doLogin(chain, a)
+        }
+
+        private fun doLogin(chain: Interceptor.Chain, a: Auth.Session): String {
             val body = buildJsonObject { put("name", a.user); put("password", a.password) }
             val req = Request.Builder().url(server.newBuilder().addPathSegment("_session").build())
                 .post(body.toString().toRequestBody(JSON)).build()
