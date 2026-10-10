@@ -268,8 +268,9 @@ class ReplicationTest {
             val servedRev = fetched.doc?.get("_rev")?.jsonPrimitive?.content
             val served = servedRev?.let { probe.readAttachment("photo", "b.txt", it) { s -> s.readBytes() } }
             val stub = fetched.doc?.get("_attachments")?.jsonObject?.get("b.txt")
-            val probeInfo = "bulkErr=${fetched.error} rev=$servedRev stub=$stub " +
-                "served=${served?.size}/${served?.let { attachmentDigest(it) }} served-text=${served?.decodeToString()}"
+            val probeInfo =
+                "bulkErr=${fetched.error} rev=$servedRev stub=$stub " +
+                    "served=${served?.size}/${served?.let { attachmentDigest(it) }} served-text=${served?.decodeToString()}"
             val pulled = p1.replicator(remote()).sync()
             val winner = p1.get("photo")
             val diag = "pullErrors=${pulled.pullErrors} winner=${winner?.rev} $probeInfo"
