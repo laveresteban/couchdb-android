@@ -284,17 +284,22 @@ class RemoteDb(
         }
     }
 
-    /** Streams an attachment's content at revision [rev] into [read], without buffering it. */
+    /**
+     * Streams an attachment at revision [rev] into [read]. [read] also gets
+     * whether the body is gzip-encoded as stored; the header is asked for
+     * explicitly so OkHttp doesn't decode it first.
+     */
     suspend fun <T> readAttachment(
         id: String,
         name: String,
         rev: String,
-        read: suspend (InputStream) -> T,
+        read: suspend (InputStream, gzipped: Boolean) -> T,
     ): T {
         val u = url.newBuilder().addPathSegment(id).addPathSegment(name).addQueryParameter("rev", rev).build()
-        http.newCall(Request.Builder().url(u).build()).await().use { res ->
+        val req = Request.Builder().url(u).header("Accept-Encoding", "gzip").build()
+        http.newCall(req).await().use { res ->
             if (!res.isSuccessful) throw errorFor(res.code, res.body?.string().orEmpty(), res.header("Retry-After"))
-            return read(res.body!!.byteStream())
+            return read(res.body!!.byteStream(), res.header("Content-Encoding") == "gzip")
         }
     }
 
