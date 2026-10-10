@@ -1,5 +1,10 @@
 package org.couchdb.sync
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -28,8 +33,13 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
 
-open class CouchException(val status: Int, val error: String?, val reason: String?) :
-    IOException("HTTP $status: $error ($reason)")
+open class CouchException(
+    val status: Int,
+    val error: String?,
+    val reason: String?,
+    /** Seconds from a `Retry-After` header, if the server sent one. */
+    val retryAfterSeconds: Long? = null,
+) : IOException("HTTP $status: $error ($reason)")
 
 class AuthRequiredException(reason: String?) : CouchException(401, "unauthorized", reason)
 
@@ -42,7 +52,7 @@ sealed interface Auth {
 }
 
 /** One row of `_changes?style=all_docs`. */
-data class RemoteChange(val id: String, val revs: List<String>, val deleted: Boolean)
+data class RemoteChange(val id: String, val revs: List<String>, val deleted: Boolean, val seq: String? = null)
 
 data class ChangesPage(val results: List<RemoteChange>, val lastSeq: String, val pending: Long?)
 
@@ -97,15 +107,66 @@ class RemoteDb(
      * request waits up to that long for a change before returning empty.
      */
     suspend fun changes(since: String, limit: Int, longpollMs: Long? = null, filter: SyncFilter? = null): ChangesPage {
+        val (u, body) = changesRequest(since, filter) {
+            addQueryParameter("limit", limit.toString())
+            if (longpollMs != null) {
+                addQueryParameter("feed", "longpoll")
+                addQueryParameter("timeout", longpollMs.toString())
+            }
+        }
+        val res = call(if (body == null) "GET" else "POST", u, body)!!.jsonObject
+        return ChangesPage(
+            results = res["results"]!!.jsonArray.map { parseChange(it.jsonObject) },
+            lastSeq = res["last_seq"]!!.seqString(),
+            pending = res["pending"]?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
+        )
+    }
+
+    /**
+     * Streams the continuous changes feed (`feed=continuous`), one change per
+     * line, until cancelled or the connection drops. The server sends a blank
+     * line every [heartbeatMs] so idle connections aren't timed out.
+     */
+    fun continuousChanges(since: String, filter: SyncFilter? = null, heartbeatMs: Long = 30_000): Flow<RemoteChange> = callbackFlow {
+        val (u, body) = changesRequest(since, filter) {
+            addQueryParameter("feed", "continuous")
+            addQueryParameter("heartbeat", heartbeatMs.toString())
+        }
+        val req = Request.Builder().url(u).header("Accept", "application/json")
+            .method(if (body == null) "GET" else "POST", body?.toString()?.toRequestBody(JSON)).build()
+        val call = http.newCall(req)
+        // The read below blocks on the socket; closing the flow cancels the
+        // call, which unblocks it. Heartbeats would otherwise keep it alive.
+        launch(Dispatchers.IO) {
+            try {
+                call.execute().use { res ->
+                    if (!res.isSuccessful) throw errorFor(res.code, res.body?.string().orEmpty())
+                    val source = res.body!!.source()
+                    while (true) {
+                        val line = source.readUtf8Line() ?: break
+                        if (line.isBlank()) continue
+                        val o = Json.parseToJsonElement(line).jsonObject
+                        if ("id" in o) send(parseChange(o))
+                    }
+                }
+                close()
+            } catch (e: Throwable) {
+                close(e)
+            }
+        }
+        awaitClose { call.cancel() }
+    }
+
+    private fun changesRequest(
+        since: String,
+        filter: SyncFilter?,
+        extra: HttpUrl.Builder.() -> Unit,
+    ): Pair<HttpUrl, JsonObject?> {
         val u = url.newBuilder().addPathSegment("_changes")
             .addQueryParameter("style", "all_docs")
             .addQueryParameter("since", since)
-            .addQueryParameter("limit", limit.toString())
             .apply {
-                if (longpollMs != null) {
-                    addQueryParameter("feed", "longpoll")
-                    addQueryParameter("timeout", longpollMs.toString())
-                }
+                extra()
                 when (filter) {
                     is SyncFilter.DocIds -> addQueryParameter("filter", "_doc_ids")
                     is SyncFilter.Selector -> addQueryParameter("filter", "_selector")
@@ -117,20 +178,15 @@ class RemoteDb(
             is SyncFilter.Selector -> buildJsonObject { put("selector", filter.selector) }
             null -> null
         }
-        val res = call(if (body == null) "GET" else "POST", u, body)!!.jsonObject
-        return ChangesPage(
-            results = res["results"]!!.jsonArray.map { r ->
-                val o = r.jsonObject
-                RemoteChange(
-                    id = o.str("id")!!,
-                    revs = o["changes"]!!.jsonArray.map { it.jsonObject.str("rev")!! },
-                    deleted = o["deleted"]?.jsonPrimitive?.contentOrNull == "true",
-                )
-            },
-            lastSeq = res["last_seq"]!!.seqString(),
-            pending = res["pending"]?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
-        )
+        return u to body
     }
+
+    private fun parseChange(o: JsonObject) = RemoteChange(
+        id = o.str("id")!!,
+        revs = o["changes"]!!.jsonArray.map { it.jsonObject.str("rev")!! },
+        deleted = o["deleted"]?.jsonPrimitive?.contentOrNull == "true",
+        seq = o["seq"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.seqString(),
+    )
 
     /** Which of the given revisions the server is missing, and which ancestors of them it has. */
     suspend fun revsDiff(revs: Map<String, List<String>>): Map<String, RevsDiffEntry> {
@@ -234,10 +290,14 @@ class RemoteDb(
             if (res.isSuccessful) return Json.parseToJsonElement(text)
             if (allow404 && res.code == 404) return null
             if (allow412 && res.code == 412) return null
-            val err = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
-            if (res.code == 401) throw AuthRequiredException(err?.str("reason"))
-            throw CouchException(res.code, err?.str("error"), err?.str("reason"))
+            throw errorFor(res.code, text, res.header("Retry-After"))
         }
+    }
+
+    private fun errorFor(code: Int, text: String, retryAfter: String? = null): CouchException {
+        val err = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+        if (code == 401) return AuthRequiredException(err?.str("reason"))
+        return CouchException(code, err?.str("error"), err?.str("reason"), retryAfter?.toLongOrNull())
     }
 
     private inner class AuthInterceptor : Interceptor {

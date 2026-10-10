@@ -54,6 +54,21 @@ if (notes.conflicts("n1").isNotEmpty()) {
 notes.compact(revsLimit = 100)
 ```
 
+## Following the changes feed
+
+For apps that react to server changes without keeping a local copy:
+
+```kotlin
+val feed = ChangesFeed(remote, checkpoint = "notifier", continuous = true)
+feed.asFlow().collect { change -> notify(change.id) }   // call feed.stop() to end
+```
+
+With a `checkpoint` name, the position is saved in `_local/<name>` on the
+server after each change, so a restarted reader resumes where the last one
+stopped (at-least-once). Network errors, 429 and 5xx are retried with
+jittered backoff that honors `Retry-After`. Longpoll is the default;
+`continuous = true` keeps one streaming connection open with heartbeats.
+
 ## How sync works
 
 - Every doc keeps its revision tree locally, like CouchDB. Local edits create
@@ -108,7 +123,7 @@ The conformance module runs the `documents`, `changes`, `sync` and
 - Attachments are held in memory while syncing (inline base64), so keep them
   to a few MB each. Multipart streaming isn't implemented.
 - Indexes are single-field. `$or`/`$nor` queries and sort run in memory.
-- Live sync uses longpoll, not the continuous feed.
+- `liveSync` waits on longpoll; `ChangesFeed` can use the continuous feed.
 
 ## Why not the generated client?
 

@@ -3,7 +3,9 @@ package org.couchdb.conformance
 import com.thoughtworks.gauge.AfterScenario
 import com.thoughtworks.gauge.BeforeScenario
 import com.thoughtworks.gauge.Step
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -18,6 +20,7 @@ import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.couchdb.sync.Auth
+import org.couchdb.sync.ChangesFeed
 import org.couchdb.sync.CouchException
 import org.couchdb.sync.RemoteDb
 import org.couchdb.sync.RevRequest
@@ -196,6 +199,28 @@ class Steps {
     @Step("The changes feed with all leaf revisions lists <n> revisions for document <id>")
     fun leafRevs(n: String, id: String) = run {
         assertEq(n.toInt(), db.changes("0", 1000).results.single { it.id == id }.revs.size)
+    }
+
+    @Step("Follow the changes feed with checkpoint <name> until document <id>")
+    fun followUntil(name: String, id: String) = follow(name, id, continuous = false)
+
+    @Step("Following the changes feed with checkpoint <name> next yields document <id>")
+    fun followNext(name: String, id: String) = next(name, id, continuous = false)
+
+    @Step("Follow the continuous changes feed with checkpoint <name> until document <id>")
+    fun followContinuousUntil(name: String, id: String) = follow(name, id, continuous = true)
+
+    @Step("Following the continuous changes feed with checkpoint <name> next yields document <id>")
+    fun followContinuousNext(name: String, id: String) = next(name, id, continuous = true)
+
+    private fun follow(name: String, id: String, continuous: Boolean) = run {
+        val feed = ChangesFeed(db, checkpoint = name, continuous = continuous)
+        withTimeout(15_000) { feed.asFlow().collect { if (it.id == id) feed.stop() } }
+    }
+
+    private fun next(name: String, id: String, continuous: Boolean) = run {
+        val first = withTimeout(15_000) { ChangesFeed(db, checkpoint = name, continuous = continuous).asFlow().first() }
+        assertEq(id, first.id)
     }
 
     // ---- sync primitives ----
