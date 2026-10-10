@@ -26,6 +26,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.IOException
+import java.util.Base64
 import java.util.UUID
 
 sealed interface SyncState {
@@ -46,18 +47,29 @@ data class SyncResult(val pulled: Int, val pushed: Int)
  * `_local/<id>`) with a shared session id. If the two disagree, for example
  * after the server database was recreated, replication starts from 0; the
  * revision diff makes that safe, just slower.
+ *
+ * Attachments: pull asks `_bulk_get` for content newer than the revisions
+ * we already have (`atts_since`) and stores it in [blobs]; push sends
+ * content inline unless the server already has it in an ancestor revision
+ * (from `possible_ancestors`), in which case it sends a stub.
+ *
+ * With a [filter], pull uses the server's `_doc_ids` / `_selector` changes
+ * filter and push applies the same filter to local changes. Deletions always
+ * pass a selector filter, since a tombstone has no fields to match.
  */
 class Replicator(
     private val store: SqlLocalStore,
     private val remote: RemoteDb,
+    private val blobs: BlobStore = MemoryBlobStore(),
+    private val filter: SyncFilter? = null,
     private val batchSize: Int = 100,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val _state = MutableStateFlow<SyncState>(SyncState.Idle)
     val state: StateFlow<SyncState> = _state.asStateFlow()
 
-    private val pullId = md5Hex("${store.uuid}|${remote.url}|pull")
-    private val pushId = md5Hex("${store.uuid}|${remote.url}|push")
+    private val pullId = md5Hex("${store.uuid}|${remote.url}|pull|$filter")
+    private val pushId = md5Hex("${store.uuid}|${remote.url}|push|$filter")
 
     /** One pull then one push. Returns how many revisions moved each way. */
     suspend fun sync(createRemote: Boolean = false): SyncResult {
@@ -79,12 +91,17 @@ class Replicator(
         var since = cp.seq ?: "0"
         var total = 0
         while (true) {
-            val page = remote.changes(since, batchSize)
-            val wanted = io { store.missingRevs(page.results.associate { it.id to it.revs }) }
-            val fetched = remote.bulkGet(wanted.flatMap { (id, revs) -> revs.map { id to it } })
+            val page = remote.changes(since, batchSize, filter = filter)
+            val requests = io {
+                store.missingRevs(page.results.associate { it.id to it.revs }).flatMap { (id, revs) ->
+                    val have = store.leafRevs(id)
+                    revs.map { RevRequest(id, it, have) }
+                }
+            }
+            val fetched = remote.bulkGet(requests, attachments = true)
             io {
                 for (f in fetched) {
-                    val doc = f.doc ?: continue
+                    val doc = f.doc?.let(::storeAttachments) ?: continue
                     store.insertRevision(f.id, history(doc), doc, doc["_deleted"]?.jsonPrimitive?.boolean == true)
                 }
             }
@@ -106,9 +123,11 @@ class Replicator(
         while (true) {
             val changes = io { store.changesSince(since, batchSize) }
             if (changes.isEmpty()) break
-            val leaves = io { changes.associate { it.id to store.leafRevs(it.id) } }
+            val leaves = io { changes.filter { passesFilter(it.id) }.associate { it.id to store.leafRevs(it.id) } }
             val missing = remote.revsDiff(leaves)
-            val docs = io { missing.flatMap { (id, revs) -> revs.mapNotNull { toWireDoc(id, it) } } }
+            val docs = io {
+                missing.flatMap { (id, diff) -> diff.missing.mapNotNull { toWireDoc(id, it, diff.possibleAncestors) } }
+            }
             remote.bulkDocsNoNewEdits(docs)
             total += docs.size
             _state.value = SyncState.Pushing(total)
@@ -136,7 +155,7 @@ class Replicator(
                 backoff = 1_000L
                 val since = readCheckpoint(pullId).seq ?: "0"
                 coroutineScope {
-                    val remoteChange = async { remote.changes(since, 1, longpollMs) }
+                    val remoteChange = async { remote.changes(since, 1, longpollMs, filter) }
                     val localWrite = async { localWrites.first(); delay(debounceMs) }
                     select {
                         remoteChange.onAwait {}
@@ -156,12 +175,58 @@ class Replicator(
         }
     }
 
-    /** Builds the wire form of a local revision: body plus `_id`, `_rev`, `_deleted`, `_revisions`. */
-    private fun toWireDoc(id: String, rev: String): JsonObject? {
+    private fun passesFilter(id: String): Boolean = when (val f = filter) {
+        null -> true
+        is SyncFilter.DocIds -> id in f.ids
+        is SyncFilter.Selector -> store.get(id)?.let { Mango.matches(it.body, f.selector) } ?: true
+    }
+
+    /** Moves inline attachment data into [blobs] and leaves stubs in the body. */
+    private fun storeAttachments(doc: JsonObject): JsonObject {
+        val atts = doc["_attachments"] as? JsonObject ?: return doc
+        val stubs = atts.mapValues { (_, a) ->
+            val att = a.jsonObject
+            val data = att["data"]?.jsonPrimitive?.content ?: return@mapValues att
+            val bytes = Base64.getDecoder().decode(data)
+            val digest = att["digest"]?.jsonPrimitive?.content ?: attachmentDigest(bytes)
+            blobs.put(digest, bytes)
+            JsonObject(
+                att.filterKeys { it !in setOf("data", "encoding", "encoded_length", "follows") } + mapOf(
+                    "digest" to JsonPrimitive(digest),
+                    "length" to JsonPrimitive(bytes.size),
+                    "stub" to JsonPrimitive(true),
+                ),
+            )
+        }
+        return JsonObject(doc + ("_attachments" to JsonObject(stubs)))
+    }
+
+    /**
+     * Builds the wire form of a local revision: body plus `_id`, `_rev`,
+     * `_deleted`, `_revisions`. Attachments the server has in one of
+     * [serverAncestors] go as stubs, the rest inline.
+     */
+    private fun toWireDoc(id: String, rev: String, serverAncestors: List<String>): JsonObject? {
         val doc = store.getRev(id, rev) ?: return null
         val path = store.revisionPath(id, rev).map(Rev::parse)
+        val known = serverAncestors.map(Rev::parse).filter { it in path }.maxOfOrNull { it.gen } ?: 0
+        val atts = (doc.body["_attachments"] as? JsonObject)?.mapValues { (_, a) ->
+            val att = a.jsonObject
+            val revpos = att["revpos"]?.jsonPrimitive?.int ?: Int.MAX_VALUE
+            val digest = att["digest"]?.jsonPrimitive?.content
+            val bytes = digest?.takeIf { revpos > known }?.let(blobs::get)
+            if (bytes == null) {
+                att
+            } else {
+                JsonObject(
+                    att.filterKeys { it !in setOf("stub", "length", "digest") } +
+                        ("data" to JsonPrimitive(Base64.getEncoder().encodeToString(bytes))),
+                )
+            }
+        }
+        val body = if (atts == null) doc.body else JsonObject(doc.body + ("_attachments" to JsonObject(atts)))
         return JsonObject(
-            doc.body + buildJsonObject {
+            body + buildJsonObject {
                 put("_id", id)
                 put("_rev", rev)
                 if (doc.deleted) put("_deleted", true)

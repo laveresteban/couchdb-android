@@ -1,8 +1,14 @@
 package org.couchdb.sync
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
 
 /** A change in the local database: the doc's latest local sequence number. */
@@ -20,6 +26,8 @@ data class LocalChange(val id: String, val seq: Long)
  *   as history have `body = NULL`.
  * - `local_docs`: non-replicated docs (checkpoints), like CouchDB `_local`.
  * - `meta`: store uuid and the sequence counter.
+ * - `indexes` / `idx`: single-field indexes over winning revisions, used
+ *   by [find] to narrow candidates before the full selector runs.
  */
 class SqlLocalStore(private val db: SqlDriver) {
     private val lock = Any()
@@ -43,9 +51,26 @@ class SqlLocalStore(private val db: SqlDriver) {
                 db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 db.execute("INSERT OR IGNORE INTO meta VALUES ('uuid', ?)", listOf(UUID.randomUUID().toString()))
                 db.execute("INSERT OR IGNORE INTO meta VALUES ('seq', '0')")
+                db.execute("CREATE TABLE IF NOT EXISTS indexes (field TEXT PRIMARY KEY)")
+                // t is the collation rank (see Mango.rank); num/str hold the value.
+                db.execute(
+                    """CREATE TABLE IF NOT EXISTS idx (
+                        field TEXT NOT NULL, doc_id TEXT NOT NULL, t INTEGER NOT NULL,
+                        num REAL, str TEXT, PRIMARY KEY (field, doc_id))""",
+                )
+                db.execute("CREATE INDEX IF NOT EXISTS idx_num ON idx(field, t, num)")
+                db.execute("CREATE INDEX IF NOT EXISTS idx_str ON idx(field, t, str)")
             }
         }
     }
+
+    private var indexed: List<String> = synchronized(lock) { db.query("SELECT field FROM indexes") { it.string(0)!! } }
+
+    /** Called with a doc id after its winning revision changes (local write or replication). */
+    @Volatile var onChange: ((String) -> Unit)? = null
+
+    /** Runs [block] atomically. Store calls inside it join the transaction. */
+    fun <T> transaction(block: () -> T): T = synchronized(lock) { db.transaction(block) }
 
     /** Stable id of this store, used to name replication checkpoints. */
     val uuid: String get() = synchronized(lock) { meta("uuid")!! }
@@ -195,6 +220,22 @@ class SqlLocalStore(private val db: SqlDriver) {
             "INSERT OR REPLACE INTO docs VALUES (?, ?, ?, ?)",
             listOf(id, win.first, if (win.second) 1 else 0, seq),
         )
+        reindex(id, if (win.second) null else bodyOf(id, win.first))
+        onChange?.invoke(id)
+    }
+
+    private fun bodyOf(id: String, rev: String): JsonObject? =
+        db.query("SELECT body FROM revs WHERE doc_id = ? AND rev = ?", listOf(id, rev)) { it.string(0) }
+            .firstOrNull()?.let { Json.parseToJsonElement(it).jsonObject }
+
+    private fun reindex(id: String, body: JsonObject?) {
+        if (indexed.isEmpty()) return
+        db.execute("DELETE FROM idx WHERE doc_id = ?", listOf(id))
+        if (body == null) return
+        for (f in indexed) {
+            val v = Mango.field(body, f) ?: continue
+            db.execute("INSERT INTO idx VALUES (?, ?, ?, ?, ?)", listOf(f, id, Mango.rank(v), numOf(v), strOf(v)))
+        }
     }
 
     private fun winner(id: String): Pair<String, Boolean>? =
@@ -210,4 +251,129 @@ class SqlLocalStore(private val db: SqlDriver) {
 
     private fun meta(key: String) =
         db.query("SELECT value FROM meta WHERE key = ?", listOf(key)) { it.string(0) }.firstOrNull()
+
+    /** Adds a single-field index (dotted paths allowed) and fills it from existing docs. */
+    fun createIndex(field: String) = synchronized(lock) {
+        db.transaction {
+            if (field in indexed) return@transaction
+            db.execute("INSERT INTO indexes VALUES (?)", listOf(field))
+            indexed = indexed + field
+            db.query("SELECT doc_id, winning_rev FROM docs WHERE deleted = 0") { it.string(0)!! to it.string(1)!! }
+                .forEach { (id, rev) ->
+                    val v = bodyOf(id, rev)?.let { Mango.field(it, field) } ?: return@forEach
+                    db.execute("INSERT INTO idx VALUES (?, ?, ?, ?, ?)", listOf(field, id, Mango.rank(v), numOf(v), strOf(v)))
+                }
+        }
+    }
+
+    val indexes: List<String> get() = indexed
+
+    /**
+     * Runs a Mango query over winning revisions. If the selector has a
+     * top-level condition on an indexed field, only matching index rows are
+     * loaded; the full selector is always checked afterwards.
+     */
+    fun find(query: Query): List<Doc> = synchronized(lock) {
+        val ids = candidates(query.selector)
+            ?: db.query("SELECT doc_id FROM docs WHERE deleted = 0") { it.string(0)!! }
+        var docs = ids.mapNotNull { get(it) }.filter { Mango.matches(it.body, query.selector) }
+        if (query.sort.isNotEmpty()) {
+            docs = docs.sortedWith { a, b ->
+                for ((f, asc) in query.sort) {
+                    val x = Mango.field(a.body, f)
+                    val y = Mango.field(b.body, f)
+                    val c = when {
+                        x == null && y == null -> 0
+                        x == null -> -1
+                        y == null -> 1
+                        else -> Mango.compare(x, y)
+                    }
+                    if (c != 0) return@sortedWith if (asc) c else -c
+                }
+                a.id.compareTo(b.id)
+            }
+        } else {
+            docs = docs.sortedBy { it.id }
+        }
+        docs.drop(query.skip).let { d -> query.limit?.let { d.take(it) } ?: d }
+    }
+
+    /** Doc ids from an index, or null if no indexed condition applies. */
+    private fun candidates(selector: JsonObject): List<String>? {
+        for ((field, cond) in selector) {
+            if (field !in indexed) continue
+            val ops: Map<String, JsonElement> = if (cond is JsonObject && cond.keys.all { it.startsWith("$") }) cond
+            else if (cond is JsonObject) continue
+            else mapOf("\$eq" to cond)
+            val where = mutableListOf("field = ?")
+            val args = mutableListOf<Any?>(field)
+            for ((op, v) in ops) {
+                val col = when {
+                    v is JsonPrimitive && !v.isString && v.booleanOrNull == null && v !is kotlinx.serialization.json.JsonNull -> "num"
+                    v is JsonPrimitive && v.isString -> "str"
+                    else -> null
+                }
+                if (op == "\$in" && v is kotlinx.serialization.json.JsonArray) {
+                    // Arrays in the doc can match $in too, so also keep array-valued rows.
+                    val vals = v.jsonArray
+                    if (vals.any { it !is JsonPrimitive || (!it.isString && it.doubleOrNull == null) }) continue
+                    val (nums, strs) = vals.partition { !it.jsonPrimitive.isString }
+                    val parts = mutableListOf("t = 5")
+                    if (nums.isNotEmpty()) { parts += "(t = 3 AND num IN (${nums.joinToString { "?" }}))"; args.addAll(nums.map { it.jsonPrimitive.doubleOrNull }) }
+                    if (strs.isNotEmpty()) { parts += "(t = 4 AND str IN (${strs.joinToString { "?" }}))"; args.addAll(strs.map { it.jsonPrimitive.content }) }
+                    where += "(${parts.joinToString(" OR ")})"
+                    continue
+                }
+                if (col == null) continue
+                val sql = when (op) {
+                    "\$eq" -> "="
+                    "\$gt" -> ">"
+                    "\$gte" -> ">="
+                    "\$lt" -> "<"
+                    "\$lte" -> "<="
+                    else -> null
+                } ?: continue
+                // Ranges cross types in CouchDB collation (null < bool < number < string < array < object).
+                val t = if (col == "num") 3 else 4
+                where += when (sql) {
+                    "=" -> "t = $t AND $col = ?"
+                    ">", ">=" -> "((t = $t AND $col $sql ?) OR t > $t)"
+                    else -> "((t = $t AND $col $sql ?) OR t < $t)"
+                }
+                args += if (col == "num") v.jsonPrimitive.doubleOrNull else v.jsonPrimitive.content
+            }
+            if (where.size == 1) continue
+            return db.query("SELECT doc_id FROM idx WHERE ${where.joinToString(" AND ")}", args) { it.string(0)!! }
+        }
+        return null
+    }
+
+    /**
+     * Frees space the way CouchDB compaction does: drops bodies of non-leaf
+     * revisions and forgets ancestors more than [revsLimit] generations
+     * behind the newest leaf. Returns the attachment digests still in use, so
+     * the caller can delete unreferenced blobs.
+     */
+    fun compact(revsLimit: Int = 1000): Set<String> = synchronized(lock) {
+        db.transaction {
+            db.execute("UPDATE revs SET body = NULL WHERE leaf = 0")
+            val rows = db.query("SELECT doc_id, rev, leaf FROM revs") { Triple(it.string(0)!!, it.string(1)!!, it.long(2) == 1L) }
+            for ((id, revs) in rows.groupBy { it.first }) {
+                val newest = revs.filter { it.third }.maxOf { Rev.parse(it.second).gen }
+                for ((_, rev, leaf) in revs) {
+                    if (!leaf && Rev.parse(rev).gen <= newest - revsLimit) {
+                        db.execute("DELETE FROM revs WHERE doc_id = ? AND rev = ?", listOf(id, rev))
+                    }
+                }
+            }
+            db.query("SELECT body FROM revs WHERE body IS NOT NULL") { it.string(0)!! }.flatMap { body ->
+                (Json.parseToJsonElement(body).jsonObject["_attachments"] as? JsonObject).orEmpty().values.mapNotNull {
+                    (it as? JsonObject)?.get("digest")?.jsonPrimitive?.content
+                }
+            }.toSet()
+        }
+    }
 }
+
+private fun numOf(v: JsonElement) = if (Mango.rank(v) == 3) v.jsonPrimitive.doubleOrNull else null
+private fun strOf(v: JsonElement) = if (Mango.rank(v) == 4) v.jsonPrimitive.content else null

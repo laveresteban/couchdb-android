@@ -2,10 +2,12 @@ package org.couchdb.sync.android
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
 import org.couchdb.sync.CouchLite
+import org.couchdb.sync.FileBlobStore
 import org.couchdb.sync.RemoteDb
 import org.couchdb.sync.SqlLocalStore
+import org.couchdb.sync.SyncFilter
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -14,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
  * ```
  * // Application.onCreate
  * CouchLiteAndroid.remotes = { name -> RemoteDb("https://db.example.com/$name", Auth.Session(user, pw)) }
- * val notes = CouchLiteAndroid.open(this, "notes")
+ * val notes = CouchLiteAndroid.open(this, "notes", encrypted = true)
  * SyncScheduler.schedulePeriodic(this, "notes")
  * ```
  */
@@ -28,15 +30,42 @@ object CouchLiteAndroid {
      */
     @Volatile var remotes: ((String) -> RemoteDb)? = null
 
-    fun open(context: Context, name: String): CouchLite = open.getOrPut(name) {
-        val helper = object : SQLiteOpenHelper(context.applicationContext, "$name.couchlite.db", null, 1) {
-            override fun onConfigure(db: SQLiteDatabase) {
-                db.enableWriteAheadLogging()
-            }
-            override fun onCreate(db: SQLiteDatabase) = Unit // SqlLocalStore creates its tables
-            override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) = Unit
+    /** Optional per-database sync filter used by background sync. */
+    @Volatile var filters: ((String) -> SyncFilter?)? = null
+
+    /**
+     * Opens (or creates) a local database. With [encrypted], the database
+     * file uses SQLCipher and attachments use AES-GCM, both keyed by a secret
+     * protected by the Android Keystore. A database's [encrypted] setting
+     * can't change after it's created; [destroy] it and sync again instead.
+     *
+     * Attachments live under `noBackupFilesDir`, so they aren't copied to
+     * cloud backups.
+     */
+    fun open(context: Context, name: String, encrypted: Boolean = false): CouchLite = open.getOrPut(name) {
+        val app = context.applicationContext
+        val dbFile = app.getDatabasePath("$name.couchlite.db").also { it.parentFile?.mkdirs() }
+        val blobDir = File(app.noBackupFilesDir, "couchlite/$name")
+        if (encrypted) {
+            System.loadLibrary("sqlcipher")
+            val secret = KeystorePassphrase.get(app, name)
+            val db = net.zetetic.database.sqlcipher.SQLiteDatabase.openOrCreateDatabase(dbFile, secret, null, null)
+            db.enableWriteAheadLogging()
+            CouchLite(SqlLocalStore(AndroidSqlDriver(db)), FileBlobStore(blobDir, secret))
+        } else {
+            val db = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+            db.enableWriteAheadLogging()
+            CouchLite(SqlLocalStore(AndroidSqlDriver(db)), FileBlobStore(blobDir))
         }
-        CouchLite(SqlLocalStore(AndroidSqlDriver(helper.writableDatabase)))
+    }
+
+    /** Deletes a local database, its attachments and its key. The server copy is untouched. */
+    fun destroy(context: Context, name: String) {
+        open.remove(name)
+        val app = context.applicationContext
+        SQLiteDatabase.deleteDatabase(app.getDatabasePath("$name.couchlite.db"))
+        File(app.noBackupFilesDir, "couchlite/$name").deleteRecursively()
+        KeystorePassphrase.forget(app, name)
     }
 
     internal fun remote(name: String): RemoteDb =

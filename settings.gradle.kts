@@ -14,7 +14,7 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "couchdb-android"
-include(":sync-core")
+include(":sync-core", ":conformance")
 
 // The Android module needs the Android SDK. Skip it when there isn't one so
 // the core library and its tests still build on a plain JVM (and in CI's

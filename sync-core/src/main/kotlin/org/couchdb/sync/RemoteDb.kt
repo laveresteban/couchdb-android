@@ -46,8 +46,22 @@ data class RemoteChange(val id: String, val revs: List<String>, val deleted: Boo
 
 data class ChangesPage(val results: List<RemoteChange>, val lastSeq: String, val pending: Long?)
 
-/** A `_bulk_get` result: the doc with `_revisions`, or null if the server reported an error. */
-data class FetchedRev(val id: String, val doc: JsonObject?)
+/** A `_bulk_get` result: the doc with `_revisions`, or the server's [error] (e.g. `not_found`). */
+data class FetchedRev(val id: String, val doc: JsonObject?, val error: String? = null)
+
+/**
+ * One `_bulk_get` request entry; a null [rev] means the winning revision.
+ * [attsSince] lists revs whose attachments we already have.
+ */
+data class RevRequest(val id: String, val rev: String? = null, val attsSince: List<String> = emptyList())
+
+data class RevsDiffEntry(val missing: List<String>, val possibleAncestors: List<String>)
+
+/** Limits sync to part of a database. Pull filters on the server, push filters locally. */
+sealed interface SyncFilter {
+    data class DocIds(val ids: List<String>) : SyncFilter
+    data class Selector(val selector: JsonObject) : SyncFilter
+}
 
 /**
  * The replication subset of the CouchDB API, matching these
@@ -82,7 +96,7 @@ class RemoteDb(
      * Reads the changes feed with every leaf revision. With [longpollMs] the
      * request waits up to that long for a change before returning empty.
      */
-    suspend fun changes(since: String, limit: Int, longpollMs: Long? = null): ChangesPage {
+    suspend fun changes(since: String, limit: Int, longpollMs: Long? = null, filter: SyncFilter? = null): ChangesPage {
         val u = url.newBuilder().addPathSegment("_changes")
             .addQueryParameter("style", "all_docs")
             .addQueryParameter("since", since)
@@ -92,8 +106,18 @@ class RemoteDb(
                     addQueryParameter("feed", "longpoll")
                     addQueryParameter("timeout", longpollMs.toString())
                 }
+                when (filter) {
+                    is SyncFilter.DocIds -> addQueryParameter("filter", "_doc_ids")
+                    is SyncFilter.Selector -> addQueryParameter("filter", "_selector")
+                    null -> Unit
+                }
             }.build()
-        val res = call("GET", u, null)!!.jsonObject
+        val body = when (filter) {
+            is SyncFilter.DocIds -> buildJsonObject { put("doc_ids", JsonArray(filter.ids.map(::JsonPrimitive))) }
+            is SyncFilter.Selector -> buildJsonObject { put("selector", filter.selector) }
+            null -> null
+        }
+        val res = call(if (body == null) "GET" else "POST", u, body)!!.jsonObject
         return ChangesPage(
             results = res["results"]!!.jsonArray.map { r ->
                 val o = r.jsonObject
@@ -108,25 +132,47 @@ class RemoteDb(
         )
     }
 
-    /** Which of the given revisions the server is missing. */
-    suspend fun revsDiff(revs: Map<String, List<String>>): Map<String, List<String>> {
+    /** Which of the given revisions the server is missing, and which ancestors of them it has. */
+    suspend fun revsDiff(revs: Map<String, List<String>>): Map<String, RevsDiffEntry> {
         if (revs.isEmpty()) return emptyMap()
         val body = JsonObject(revs.mapValues { (_, v) -> JsonArray(v.map(::JsonPrimitive)) })
         val res = call("POST", url.newBuilder().addPathSegment("_revs_diff").build(), body)!!.jsonObject
-        return res.mapValues { (_, v) -> v.jsonObject["missing"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty() }
+        fun list(o: JsonObject, k: String) = o[k]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+        return res.mapValues { (_, v) -> RevsDiffEntry(list(v.jsonObject, "missing"), list(v.jsonObject, "possible_ancestors")) }
     }
 
-    /** Fetches specific revisions with their history (`_bulk_get?revs=true`). */
-    suspend fun bulkGet(revs: List<Pair<String, String>>): List<FetchedRev> {
+    /**
+     * Fetches specific revisions with their history (`_bulk_get?revs=true`).
+     * With [attachments], new attachment content comes back inline as base64;
+     * attachments already present in a rev from `attsSince` come back as stubs.
+     */
+    suspend fun bulkGet(revs: List<RevRequest>, attachments: Boolean = false): List<FetchedRev> {
         if (revs.isEmpty()) return emptyList()
         val body = buildJsonObject {
-            put("docs", buildJsonArray { revs.forEach { (id, rev) -> add(buildJsonObject { put("id", id); put("rev", rev) }) } })
+            put(
+                "docs",
+                buildJsonArray {
+                    revs.forEach { r ->
+                        add(
+                            buildJsonObject {
+                                put("id", r.id)
+                                r.rev?.let { put("rev", it) }
+                                if (r.attsSince.isNotEmpty()) put("atts_since", JsonArray(r.attsSince.map(::JsonPrimitive)))
+                            },
+                        )
+                    }
+                },
+            )
         }
-        val u = url.newBuilder().addPathSegment("_bulk_get").addQueryParameter("revs", "true").build()
+        val u = url.newBuilder().addPathSegment("_bulk_get").addQueryParameter("revs", "true")
+            .apply { if (attachments) addQueryParameter("attachments", "true") }.build()
         val res = call("POST", u, body)!!.jsonObject
         return res["results"]!!.jsonArray.flatMap { r ->
             val id = r.jsonObject.str("id")!!
-            r.jsonObject["docs"]!!.jsonArray.map { FetchedRev(id, it.jsonObject["ok"]?.jsonObject) }
+            r.jsonObject["docs"]!!.jsonArray.map {
+                val o = it.jsonObject
+                FetchedRev(id, o["ok"]?.jsonObject, (o["error"] as? JsonObject)?.str("error"))
+            }
         }
     }
 
@@ -148,6 +194,27 @@ class RemoteDb(
     suspend fun putLocal(id: String, body: JsonObject) {
         call("PUT", localUrl(id), body)
     }
+
+    /**
+     * Any other CouchDB call, relative to this database. [path] segments are
+     * URL-encoded; pass an empty list for the database itself. Returns null
+     * for a 404.
+     */
+    suspend fun request(
+        method: String,
+        path: List<String> = emptyList(),
+        query: Map<String, String> = emptyMap(),
+        body: JsonElement? = null,
+    ): JsonElement? {
+        val u = url.newBuilder().apply {
+            path.forEach { addPathSegment(it) }
+            query.forEach { (k, v) -> addQueryParameter(k, v) }
+        }.build()
+        return call(method, u, body, allow404 = true)
+    }
+
+    /** Deletes the remote database. Returns false if it didn't exist. */
+    suspend fun destroy(): Boolean = call("DELETE", url, null, allow404 = true) != null
 
     private fun localUrl(id: String) = url.newBuilder().addPathSegment("_local").addPathSegment(id).build()
 

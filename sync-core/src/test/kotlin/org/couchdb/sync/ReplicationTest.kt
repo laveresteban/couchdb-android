@@ -34,7 +34,7 @@ class ReplicationTest {
     private val dbUrl = "$server/$dbName"
 
     private fun remote(auth: Auth = Auth.Basic(user, password)) = RemoteDb(dbUrl, auth)
-    private fun device() = CouchLite(SqlLocalStore(JdbcSqlDriver()))
+    private fun device() = CouchLite(SqlLocalStore(JdbcSqlDriver()), MemoryBlobStore())
     private fun body(v: String) = JsonObject(mapOf("v" to JsonPrimitive(v)))
 
     @BeforeEach
@@ -163,4 +163,62 @@ class ReplicationTest {
         .header("Authorization", Credentials.basic(user, password))
         .method(method, json?.toString()?.toRequestBody("application/json".toMediaType()) ?: if (method == "PUT") ByteArray(0).toRequestBody() else null)
         .build()
+
+    @Test
+    fun `attachments sync both ways`() = runBlocking {
+        val p1 = device()
+        val p2 = device()
+        var rev = p1.put("photo", body("1"))
+        rev = p1.putAttachment("photo", rev, "a.bin", "application/octet-stream", ByteArray(5000) { it.toByte() })
+        p1.replicator(remote()).sync()
+
+        val raw = rawBytes("/photo/a.bin")
+        assertEquals(5000, raw.size)
+        assertEquals(7.toByte(), raw[7])
+
+        p2.replicator(remote()).sync()
+        assertEquals(5000, p2.getAttachment("photo", "a.bin")!!.size)
+
+        // Edit on p2 keeping the attachment: it goes back as a stub, the server keeps the content.
+        val doc = p2.get("photo")!!
+        p2.put("photo", JsonObject(body("2") + ("_attachments" to doc.body["_attachments"]!!)), doc.rev)
+        p2.replicator(remote()).sync()
+        assertEquals(5000, rawBytes("/photo/a.bin").size)
+
+        // Server-side attachment comes down.
+        val serverRev = rest("GET", "/photo")["_rev"]!!.jsonPrimitive.content
+        http.newCall(
+            Request.Builder().url("$dbUrl/photo/b.txt?rev=$serverRev")
+                .header("Authorization", Credentials.basic(user, password))
+                .put("from server".toRequestBody("text/plain".toMediaType())).build(),
+        ).execute().close()
+        p1.replicator(remote()).sync()
+        assertEquals("from server", p1.getAttachment("photo", "b.txt")!!.decodeToString())
+        assertEquals(5000, p1.getAttachment("photo", "a.bin")!!.size)
+    }
+
+    @Test
+    fun `filtered sync by doc ids and selector`() = runBlocking {
+        rest("PUT", "/mine1", buildJsonObject { put("owner", "me") })
+        rest("PUT", "/mine2", buildJsonObject { put("owner", "me") })
+        rest("PUT", "/theirs", buildJsonObject { put("owner", "them") })
+
+        val bySelector = device()
+        val owned = SyncFilter.Selector(buildJsonObject { put("owner", "me") })
+        bySelector.replicator(remote(), owned).sync()
+        assertEquals(listOf("mine1", "mine2"), bySelector.allDocs().map { it.id })
+
+        bySelector.put("local-mine", buildJsonObject { put("owner", "me") })
+        bySelector.put("local-other", buildJsonObject { put("owner", "x") })
+        bySelector.replicator(remote(), owned).sync()
+        assertEquals(200, status("GET", "/local-mine"))
+        assertEquals(404, status("GET", "/local-other"))
+
+        val byIds = device()
+        byIds.replicator(remote(), SyncFilter.DocIds(listOf("theirs"))).sync()
+        assertEquals(listOf("theirs"), byIds.allDocs().map { it.id })
+    }
+
+    private fun rawBytes(path: String): ByteArray =
+        http.newCall(request("GET", path, null)).execute().use { it.body!!.bytes() }
 }
