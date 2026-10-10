@@ -203,6 +203,10 @@ class SqlLocalStore(private val db: SqlDriver) {
                         )
                     }
                 }
+                // Every ancestor now has a child, so none of them can be a leaf anymore.
+                for (ancestor in history.drop(1)) {
+                    db.execute("UPDATE revs SET leaf = 0 WHERE doc_id = ? AND rev = ?", listOf(id, ancestor))
+                }
                 insertRev(id, history[0], history.getOrNull(1), deleted, body.withoutMeta())
                 updateWinner(id)
                 true

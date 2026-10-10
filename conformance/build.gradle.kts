@@ -20,7 +20,7 @@ dependencies {
 // Runs the shared specs (copied in by scripts/conformance.sh) and the SDK
 // specs in sdk-specs/, with the compiled step classes on the classpath.
 tasks.register<Exec>("gauge") {
-    dependsOn("classes")
+    dependsOn("classes", configurations.runtimeClasspath)
     workingDir = projectDir
     val tags = (project.findProperty("tags") as String?) ?: "documents | changes | sync | databases | attachments | auth | sdk"
     commandLine("gauge", "run", "--tags", tags, "specs", "sdk-specs")

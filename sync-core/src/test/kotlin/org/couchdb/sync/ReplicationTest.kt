@@ -263,9 +263,12 @@ class ReplicationTest {
                     .header("Authorization", Credentials.basic(user, password))
                     .put("from server".toRequestBody("text/plain".toMediaType())).build(),
             ).execute().close()
-            p1.replicator(remote()).sync()
-            assertEquals("from server", p1.getAttachment("photo", "b.txt")!!.decodeToString())
-            assertEquals(5000, p1.getAttachment("photo", "a.bin")!!.size)
+            val pulled = p1.replicator(remote()).sync()
+            val winner = p1.get("photo")
+            val diag = "pullErrors=${pulled.pullErrors} winner=${winner?.rev} atts=${winner?.body?.get("_attachments")}"
+            assertEquals(0, pulled.pullErrors, diag)
+            assertEquals("from server", p1.getAttachment("photo", "b.txt")?.decodeToString(), diag)
+            assertEquals(5000, p1.getAttachment("photo", "a.bin")?.size, diag)
         }
 
     @Test

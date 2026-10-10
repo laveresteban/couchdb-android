@@ -490,6 +490,8 @@ class Steps {
         run {
             val req = Request.Builder().url("$server/_session").delete().header("Cookie", sessionCookie!!).build()
             OkHttpClient().newCall(req).execute().use { check(it.isSuccessful) { "logout failed: ${it.code}" } }
+            // CouchDB keeps honoring a cookie until it expires, so a logged-out client sends none.
+            sessionCookie = null
         }
 
     @Step("The session user is anonymous")
