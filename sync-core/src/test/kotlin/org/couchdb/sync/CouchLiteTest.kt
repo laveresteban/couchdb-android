@@ -30,6 +30,18 @@ class CouchLiteTest {
     }
 
     @Test
+    fun `pulling a descendant of a local revision is not a conflict`() =
+        runBlocking<Unit> {
+            val db = db()
+            val rev1 = db.put("n", body("1"))
+            val rev2 = db.put("n", body("2"), rev1)
+            // The server has 3 and 4, with 3 unknown here: the local 2 must stop being a leaf.
+            db.store.insertRevision("n", listOf("4-d", "3-c", rev2, rev1), body("4"), false)
+            assertEquals(emptyList(), db.conflicts("n"))
+            assertEquals("4-d", db.get("n")!!.rev)
+        }
+
+    @Test
     fun `pick makes the chosen losing revision the winner`() =
         runBlocking {
             val db = db()

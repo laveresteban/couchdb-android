@@ -115,6 +115,33 @@ class ReplicatorProtocolTest {
         }
 
     @Test
+    fun `a server-side attachment added later keeps the earlier one`() =
+        runBlocking<Unit> {
+            val a = ByteArray(5000) { it.toByte() }
+            val b = "from server".toByteArray()
+            val phone = device()
+            val rev1 = phone.put("photo", body("1"))
+            val rev2 = phone.putAttachment("photo", rev1, "a.bin", "application/octet-stream", a)
+            val aStub = stub("a.bin", attachmentDigest(a), a.size)
+            val bStub = stub("b.txt", attachmentDigest(b), b.size)
+            val h2 = rev2.substringAfter("-")
+            val h1 = rev1.substringAfter("-")
+            couch.on("GET", "/db/_changes") { FakeCouch.json(changes("""{"seq":"1","id":"photo","changes":[{"rev":"4-d"}]}""")) }
+            couch.on("POST", "/db/_bulk_get") {
+                val atts = aStub.removeSuffix("}").removePrefix("{") + "," + bStub.removeSuffix("}").removePrefix("{")
+                val history = """"d","c","$h2","$h1""""
+                FakeCouch.json(
+                    """{"results":[{"id":"photo","docs":[{"ok":{"_id":"photo","_rev":"4-d",""" +
+                        """"_revisions":{"start":4,"ids":[$history]},"v":"x","_attachments":{$atts}}}]}]}""",
+                )
+            }
+            couch.on("GET", "/db/photo/b.txt") { MockResponse().setBody(Buffer().write(b)) }
+            phone.replicator(remote()).sync()
+            assertContentEquals(b, phone.getAttachment("photo", "b.txt"))
+            assertContentEquals(a, phone.getAttachment("photo", "a.bin"))
+        }
+
+    @Test
     fun `large attachments are sent as multipart parts with a matching length`() =
         runBlocking {
             val bytes = ByteArray(3000) { (it % 251).toByte() }
