@@ -13,9 +13,11 @@ Design notes: [couchdb-sdk-generator/docs/android-offline-sync.md](https://githu
 | `sync-core` | Plain Kotlin/JVM. Revision-tree store, Mango queries and indexes, attachments, CouchDB client, replicator, conflict handling. Most logic and tests live here. |
 | `android` | Android glue: SQLite/SQLCipher driver, Keystore-protected keys, `CouchLiteAndroid.open`, WorkManager `SyncWorker` and `SyncScheduler`. |
 | `conformance` | Kotlin steps for the shared Gauge specs in couchdb-sdk-generator. |
+| `example-notes` | A notes app that works offline and syncs. Start here: [example-notes/README.md](example-notes/README.md). |
 
-`android` is only included when an Android SDK is found (`ANDROID_HOME` or
-`sdk.dir` in `local.properties`), so the rest builds and tests on any JVM.
+`android` and `example-notes` are only included when an Android SDK is found
+(`ANDROID_HOME` or `sdk.dir` in `local.properties`), so the rest builds and
+tests on any JVM.
 
 ## Usage
 
@@ -49,13 +51,14 @@ result.pushFailures.forEach { log("not synced: ${it.id} ${it.error} ${it.reason}
 val mine = SyncFilter.Selector(buildJsonObject { put("owner", userId) })
 notes.replicator(remote, filter = mine).sync()
 
-// Conflicts
-if (notes.conflicts("n1").isNotEmpty()) {
-    notes.resolve("n1") { winner, others -> Resolution.Merge(merge(winner, others)) }
-}
+// Conflicts: watch them, settle them by hand, or let the replicator settle them after each pull
+notes.observeConflicts("n1").collect { losers -> if (losers.isNotEmpty()) showChoices(losers) }
+notes.resolve("n1") { winner, others -> Resolution.Pick(others.first().rev) }   // or KeepWinner, Merge(body)
+notes.replicator(remote, resolver = ConflictResolver { _, _ -> Resolution.KeepWinner }).sync()
 
 // Housekeeping: drop old revision bodies and unused attachment files
 notes.compact(revsLimit = 100)
+notes.close()                                    // later open() calls reopen it
 ```
 
 ## Following the changes feed
@@ -114,15 +117,21 @@ With `encrypted = true` the database file uses SQLCipher and attachment files
 use AES-256-GCM. Both use a random 32-byte secret per database, stored
 encrypted by a key in the Android Keystore. If that key is lost (for example,
 app data cleared), call `CouchLiteAndroid.destroy` and sync again.
-Attachments are kept under `noBackupFilesDir`.
+Attachments are kept under `noBackupFilesDir`. Attachments over 1 MB stream as multipart
+parts instead of inline base64. Attachments over 1 MB stream as multipart
+parts instead of inline base64.
 
 ## Tests
 
 ```sh
 docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.4
-./gradlew :sync-core:test                       # unit + replication tests
-scripts/conformance.sh ../couchdb-sdk-generator  # Gauge specs (needs gauge + java plugin)
+./gradlew :sync-core:test                       # unit tests; CouchDB and PouchDB tests when reachable
+./gradlew :sync-core:koverVerify                 # line coverage gate (88%)
+./gradlew :android:testDebugUnitTest             # Robolectric: SQLite driver, lifecycle, workers, scheduling
 ./gradlew :android:connectedDebugAndroidTest     # on a device/emulator, CouchDB at 10.0.2.2
+scripts/conformance.sh ../couchdb-sdk-generator  # Gauge: shared specs + conformance/sdk-specs (needs gauge + java plugin)
+(cd interop && npm ci)                           # PouchDB, for the interop test
+./gradlew ktlintCheck                            # formatting, all modules
 ```
 
 Replication tests are skipped if no CouchDB is reachable at `COUCHDB_URL`.
@@ -132,10 +141,18 @@ The conformance module runs the `documents`, `changes`, `sync` and
 
 ## Limits
 
-- Attachments are held in memory while syncing (inline base64), so keep them
-  to a few MB each. Multipart streaming isn't implemented.
-- Indexes are single-field. `$or`/`$nor` queries and sort run in memory.
-- `liveSync` waits on longpoll; `ChangesFeed` can use the continuous feed.
+- Attachments up to 1 MB go inline; larger ones stream as multipart parts. Pulls fetch
+  attachment bodies one at a time.
+- Indexes are single-field or compound (a sort on a prefix of a compound index reads it).
+  `$or`/`$nor` queries and other sorts run in memory.
+- `liveSync(continuous = true)` keeps one streaming connection open; the default longpolls.
+
+## Publishing
+
+Maven Central coordinates: `io.github.laveresteban:sync-core` and
+`io.github.laveresteban:couchdb-android`. Pushing a `v*` tag runs
+`.github/workflows/release.yml`, which needs the `MAVEN_CENTRAL_USERNAME`,
+`MAVEN_CENTRAL_PASSWORD`, `SIGNING_KEY` and `SIGNING_PASSWORD` secrets.
 
 ## Why not the generated client?
 

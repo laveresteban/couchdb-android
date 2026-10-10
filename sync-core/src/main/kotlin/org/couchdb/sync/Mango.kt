@@ -29,18 +29,30 @@ data class Query(
  * As in CouchDB, a missing field only matches `{"$exists": false}`.
  */
 object Mango {
-    fun matches(doc: JsonObject, selector: JsonObject): Boolean =
-        selector.all { (key, cond) -> matchTop(doc, key, cond) }
+    fun matches(
+        doc: JsonObject,
+        selector: JsonObject,
+    ): Boolean = selector.all { (key, cond) -> matchTop(doc, key, cond) }
 
-    private fun matchTop(doc: JsonObject, key: String, cond: JsonElement): Boolean = when (key) {
-        "\$and" -> cond.jsonArray.all { matches(doc, it.jsonObject) }
-        "\$or" -> cond.jsonArray.any { matches(doc, it.jsonObject) }
-        "\$nor" -> cond.jsonArray.none { matches(doc, it.jsonObject) }
-        "\$not" -> !matches(doc, cond.jsonObject)
-        else -> matchField(field(doc, key), cond, key, doc)
-    }
+    private fun matchTop(
+        doc: JsonObject,
+        key: String,
+        cond: JsonElement,
+    ): Boolean =
+        when (key) {
+            "\$and" -> cond.jsonArray.all { matches(doc, it.jsonObject) }
+            "\$or" -> cond.jsonArray.any { matches(doc, it.jsonObject) }
+            "\$nor" -> cond.jsonArray.none { matches(doc, it.jsonObject) }
+            "\$not" -> !matches(doc, cond.jsonObject)
+            else -> matchField(field(doc, key), cond, key, doc)
+        }
 
-    private fun matchField(value: JsonElement?, cond: JsonElement, path: String, doc: JsonObject): Boolean {
+    private fun matchField(
+        value: JsonElement?,
+        cond: JsonElement,
+        path: String,
+        doc: JsonObject,
+    ): Boolean {
         if (cond is JsonObject && cond.keys.any { it.startsWith("$") }) {
             return cond.all { (op, arg) -> operator(value, op, arg) }
         }
@@ -51,7 +63,11 @@ object Mango {
         return value != null && compare(value, cond) == 0
     }
 
-    private fun operator(value: JsonElement?, op: String, arg: JsonElement): Boolean {
+    private fun operator(
+        value: JsonElement?,
+        op: String,
+        arg: JsonElement,
+    ): Boolean {
         if (op == "\$exists") return (value != null) == arg.jsonPrimitive.booleanOrNull
         if (value == null) return false
         return when (op) {
@@ -66,13 +82,19 @@ object Mango {
             "\$type" -> typeName(value) == arg.jsonPrimitive.content
             "\$size" -> value is JsonArray && value.size == arg.jsonPrimitive.content.toInt()
             "\$all" -> value is JsonArray && arg.jsonArray.all { a -> value.any { compare(it, a) == 0 } }
-            "\$elemMatch" -> value is JsonArray && value.any { el ->
-                val sel = arg.jsonObject
-                if (el is JsonObject && sel.keys.none { it.startsWith("$") }) matches(el, sel)
-                else matchField(el, sel, "", JsonObject(emptyMap()))
-            }
-            "\$regex" -> value is JsonPrimitive && value.isString &&
-                Regex(arg.jsonPrimitive.content).containsMatchIn(value.content)
+            "\$elemMatch" ->
+                value is JsonArray &&
+                    value.any { el ->
+                        val sel = arg.jsonObject
+                        if (el is JsonObject && sel.keys.none { it.startsWith("$") }) {
+                            matches(el, sel)
+                        } else {
+                            matchField(el, sel, "", JsonObject(emptyMap()))
+                        }
+                    }
+            "\$regex" ->
+                value is JsonPrimitive && value.isString &&
+                    Regex(arg.jsonPrimitive.content).containsMatchIn(value.content)
             "\$mod" -> {
                 val (d, r) = arg.jsonArray.map { it.jsonPrimitive.content.toLong() }
                 (value as? JsonPrimitive)?.content?.toLongOrNull()?.let { it % d == r } ?: false
@@ -83,43 +105,54 @@ object Mango {
     }
 
     /** `$in` matches an equal value, or any element when the field is an array. */
-    private fun inArray(value: JsonElement, candidate: JsonElement) =
-        compare(value, candidate) == 0 || (value is JsonArray && value.any { compare(it, candidate) == 0 })
+    private fun inArray(
+        value: JsonElement,
+        candidate: JsonElement,
+    ) = compare(value, candidate) == 0 || (value is JsonArray && value.any { compare(it, candidate) == 0 })
 
-    fun field(doc: JsonObject, path: String): JsonElement? {
+    fun field(
+        doc: JsonObject,
+        path: String,
+    ): JsonElement? {
         var cur: JsonElement = doc
         for (part in path.split('.')) {
-            cur = when (cur) {
-                is JsonObject -> cur[part] ?: return null
-                is JsonArray -> part.toIntOrNull()?.let { cur.jsonArray.getOrNull(it) } ?: return null
-                else -> return null
-            }
+            cur =
+                when (cur) {
+                    is JsonObject -> cur[part] ?: return null
+                    is JsonArray -> part.toIntOrNull()?.let { cur.jsonArray.getOrNull(it) } ?: return null
+                    else -> return null
+                }
         }
         return cur
     }
 
-    private fun typeName(v: JsonElement) = when {
-        v is JsonNull -> "null"
-        v is JsonObject -> "object"
-        v is JsonArray -> "array"
-        v is JsonPrimitive && v.isString -> "string"
-        v is JsonPrimitive && v.booleanOrNull != null -> "boolean"
-        else -> "number"
-    }
+    private fun typeName(v: JsonElement) =
+        when {
+            v is JsonNull -> "null"
+            v is JsonObject -> "object"
+            v is JsonArray -> "array"
+            v is JsonPrimitive && v.isString -> "string"
+            v is JsonPrimitive && v.booleanOrNull != null -> "boolean"
+            else -> "number"
+        }
 
     /** Collation rank: null < false < true < numbers < strings < arrays < objects. */
-    internal fun rank(v: JsonElement): Int = when {
-        v is JsonNull -> 0
-        v is JsonPrimitive && !v.isString && v.booleanOrNull == false -> 1
-        v is JsonPrimitive && !v.isString && v.booleanOrNull == true -> 2
-        v is JsonPrimitive && !v.isString -> 3
-        v is JsonPrimitive -> 4
-        v is JsonArray -> 5
-        else -> 6
-    }
+    internal fun rank(v: JsonElement): Int =
+        when {
+            v is JsonNull -> 0
+            v is JsonPrimitive && !v.isString && v.booleanOrNull == false -> 1
+            v is JsonPrimitive && !v.isString && v.booleanOrNull == true -> 2
+            v is JsonPrimitive && !v.isString -> 3
+            v is JsonPrimitive -> 4
+            v is JsonArray -> 5
+            else -> 6
+        }
 
     /** CouchDB view collation, with plain code-point order for strings. */
-    fun compare(a: JsonElement, b: JsonElement): Int {
+    fun compare(
+        a: JsonElement,
+        b: JsonElement,
+    ): Int {
         val ra = rank(a)
         val rb = rank(b)
         if (ra != rb) return ra.compareTo(rb)

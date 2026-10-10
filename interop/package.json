@@ -1,0 +1,12 @@
+{
+  "name": "couchdb-android-interop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "read": "node pouch.mjs read",
+    "write": "node pouch.mjs write"
+  },
+  "dependencies": {
+    "pouchdb-node": "9.0.0"
+  }
+}

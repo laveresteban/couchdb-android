@@ -38,32 +38,34 @@ class StorageTest {
     }
 
     @Test
-    fun `attachments are stored by digest and survive edits that keep their stubs`() = runBlocking {
-        val db = CouchLite(SqlLocalStore(JdbcSqlDriver()))
-        val r1 = db.put("a", body("1"))
-        val r2 = db.putAttachment("a", r1, "note.txt", "text/plain", "hi".toByteArray())
-        assertContentEquals("hi".toByteArray(), db.getAttachment("a", "note.txt"))
-        val doc = db.get("a")!!
-        val r3 = db.put("a", JsonObject(body("2") + ("_attachments" to doc.body["_attachments"]!!)), r2)
-        assertContentEquals("hi".toByteArray(), db.getAttachment("a", "note.txt"))
-        db.deleteAttachment("a", r3, "note.txt")
-        assertNull(db.getAttachment("a", "note.txt"))
-    }
+    fun `attachments are stored by digest and survive edits that keep their stubs`() =
+        runBlocking {
+            val db = CouchLite(SqlLocalStore(JdbcSqlDriver()))
+            val r1 = db.put("a", body("1"))
+            val r2 = db.putAttachment("a", r1, "note.txt", "text/plain", "hi".toByteArray())
+            assertContentEquals("hi".toByteArray(), db.getAttachment("a", "note.txt"))
+            val doc = db.get("a")!!
+            val r3 = db.put("a", JsonObject(body("2") + ("_attachments" to doc.body["_attachments"]!!)), r2)
+            assertContentEquals("hi".toByteArray(), db.getAttachment("a", "note.txt"))
+            db.deleteAttachment("a", r3, "note.txt")
+            assertNull(db.getAttachment("a", "note.txt"))
+        }
 
     @Test
-    fun `compaction drops old bodies, history and unused blobs`() = runBlocking {
-        val db = CouchLite(SqlLocalStore(JdbcSqlDriver()))
-        var rev = db.put("a", body("0"))
-        rev = db.putAttachment("a", rev, "f", "text/plain", "old".toByteArray())
-        rev = db.deleteAttachment("a", rev, "f")
-        repeat(10) { rev = db.put("a", body("${it + 1}"), rev) }
-        val oldest = db.store.revisionPath("a", rev).last()
-        assertTrue(db.store.getRev("a", oldest) != null)
+    fun `compaction drops old bodies, history and unused blobs`() =
+        runBlocking {
+            val db = CouchLite(SqlLocalStore(JdbcSqlDriver()))
+            var rev = db.put("a", body("0"))
+            rev = db.putAttachment("a", rev, "f", "text/plain", "old".toByteArray())
+            rev = db.deleteAttachment("a", rev, "f")
+            repeat(10) { rev = db.put("a", body("${it + 1}"), rev) }
+            val oldest = db.store.revisionPath("a", rev).last()
+            assertTrue(db.store.getRev("a", oldest) != null)
 
-        db.compact(revsLimit = 5)
-        assertNull(db.store.getRev("a", oldest))
-        assertEquals(6, db.store.revisionPath("a", rev).size) // 5 kept + the pruned parent id
-        assertEquals("10", db.get("a")!!.body["v"].toString().trim('"'))
-        assertTrue(db.blobs.digests().isEmpty())
-    }
+            db.compact(revsLimit = 5)
+            assertNull(db.store.getRev("a", oldest))
+            assertEquals(6, db.store.revisionPath("a", rev).size) // 5 kept + the pruned parent id
+            assertEquals("10", db.get("a")!!.body["v"].toString().trim('"'))
+            assertTrue(db.blobs.digests().isEmpty())
+        }
 }

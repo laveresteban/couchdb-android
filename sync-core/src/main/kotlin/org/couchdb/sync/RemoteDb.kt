@@ -27,9 +27,13 @@ import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okio.BufferedSink
 import java.io.IOException
+import java.io.InputStream
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
 
@@ -45,6 +49,7 @@ class AuthRequiredException(reason: String?) : CouchException(401, "unauthorized
 
 sealed interface Auth {
     data object None : Auth
+
     data class Basic(val user: String, val password: String) : Auth
 
     /** Cookie auth via `POST /_session`; logs in again when the cookie expires. */
@@ -59,11 +64,11 @@ data class ChangesPage(val results: List<RemoteChange>, val lastSeq: String, val
 /** A `_bulk_get` result: the doc with `_revisions`, or the server's [error] (e.g. `not_found`). */
 data class FetchedRev(val id: String, val doc: JsonObject?, val error: String? = null)
 
-/**
- * One `_bulk_get` request entry; a null [rev] means the winning revision.
- * [attsSince] lists revs whose attachments we already have.
- */
-data class RevRequest(val id: String, val rev: String? = null, val attsSince: List<String> = emptyList())
+/** One `_bulk_get` request entry; a null [rev] means the winning revision. */
+data class RevRequest(val id: String, val rev: String? = null)
+
+/** An attachment to send with its own part in a multipart write (see [RemoteDb.putWithAttachments]). */
+data class PendingAttachment(val name: String, val contentType: String, val length: Long, val digest: String)
 
 data class RevsDiffEntry(val missing: List<String>, val possibleAncestors: List<String>)
 
@@ -73,6 +78,7 @@ data class WriteFailure(val id: String, val rev: String?, val error: String, val
 /** Limits sync to part of a database. Pull filters on the server, push filters locally. */
 sealed interface SyncFilter {
     data class DocIds(val ids: List<String>) : SyncFilter
+
     data class Selector(val selector: JsonObject) : SyncFilter
 }
 
@@ -89,12 +95,14 @@ class RemoteDb(
 ) {
     val url: HttpUrl = dbUrl.trimEnd('/').toHttpUrl()
     private val server: HttpUrl = url.newBuilder().removePathSegment(url.pathSize - 1).build()
+
     @Volatile private var sessionCookie: String? = null
 
-    private val http = client.newBuilder()
-        .readTimeout(90, TimeUnit.SECONDS)
-        .addInterceptor(AuthInterceptor())
-        .build()
+    private val http =
+        client.newBuilder()
+            .readTimeout(90, TimeUnit.SECONDS)
+            .addInterceptor(AuthInterceptor())
+            .build()
 
     /** A client whose read timeout outlasts a server-side wait of [waitMs] (longpoll or heartbeat). */
     private fun waiting(waitMs: Long): OkHttpClient =
@@ -113,14 +121,20 @@ class RemoteDb(
      * Reads the changes feed with every leaf revision. With [longpollMs] the
      * request waits up to that long for a change before returning empty.
      */
-    suspend fun changes(since: String, limit: Int, longpollMs: Long? = null, filter: SyncFilter? = null): ChangesPage {
-        val (u, body) = changesRequest(since, filter) {
-            addQueryParameter("limit", limit.toString())
-            if (longpollMs != null) {
-                addQueryParameter("feed", "longpoll")
-                addQueryParameter("timeout", longpollMs.toString())
+    suspend fun changes(
+        since: String,
+        limit: Int,
+        longpollMs: Long? = null,
+        filter: SyncFilter? = null,
+    ): ChangesPage {
+        val (u, body) =
+            changesRequest(since, filter) {
+                addQueryParameter("limit", limit.toString())
+                if (longpollMs != null) {
+                    addQueryParameter("feed", "longpoll")
+                    addQueryParameter("timeout", longpollMs.toString())
+                }
             }
-        }
         val res = call(if (body == null) "GET" else "POST", u, body, client = waiting(longpollMs ?: 0))!!.jsonObject
         return ChangesPage(
             results = res["results"]!!.jsonArray.map { parseChange(it.jsonObject) },
@@ -134,101 +148,113 @@ class RemoteDb(
      * line, until cancelled or the connection drops. The server sends a blank
      * line every [heartbeatMs] so idle connections aren't timed out.
      */
-    fun continuousChanges(since: String, filter: SyncFilter? = null, heartbeatMs: Long = 30_000): Flow<RemoteChange> = callbackFlow {
-        val (u, body) = changesRequest(since, filter) {
-            addQueryParameter("feed", "continuous")
-            addQueryParameter("heartbeat", heartbeatMs.toString())
-        }
-        val req = Request.Builder().url(u).header("Accept", "application/json")
-            .method(if (body == null) "GET" else "POST", body?.toString()?.toRequestBody(JSON)).build()
-        val call = waiting(heartbeatMs).newCall(req)
-        // The read below blocks on the socket; closing the flow cancels the
-        // call, which unblocks it. Heartbeats would otherwise keep it alive.
-        launch(Dispatchers.IO) {
-            try {
-                call.execute().use { res ->
-                    if (!res.isSuccessful) throw errorFor(res.code, res.body?.string().orEmpty())
-                    val source = res.body!!.source()
-                    while (true) {
-                        val line = source.readUtf8Line() ?: break
-                        if (line.isBlank()) continue
-                        val o = Json.parseToJsonElement(line).jsonObject
-                        if ("id" in o) send(parseChange(o))
-                    }
+    fun continuousChanges(
+        since: String,
+        filter: SyncFilter? = null,
+        heartbeatMs: Long = 30_000,
+    ): Flow<RemoteChange> =
+        callbackFlow {
+            val (u, body) =
+                changesRequest(since, filter) {
+                    addQueryParameter("feed", "continuous")
+                    addQueryParameter("heartbeat", heartbeatMs.toString())
                 }
-                close()
-            } catch (e: Throwable) {
-                close(e)
+            val req =
+                Request.Builder().url(u).header("Accept", "application/json")
+                    .method(if (body == null) "GET" else "POST", body?.toString()?.toRequestBody(JSON)).build()
+            val call = waiting(heartbeatMs).newCall(req)
+            // The read below blocks on the socket; closing the flow cancels the
+            // call, which unblocks it. Heartbeats would otherwise keep it alive.
+            launch(Dispatchers.IO) {
+                try {
+                    call.execute().use { res ->
+                        if (!res.isSuccessful) throw errorFor(res.code, res.body?.string().orEmpty())
+                        val source = res.body!!.source()
+                        while (true) {
+                            val line = source.readUtf8Line() ?: break
+                            if (line.isBlank()) continue
+                            val o = Json.parseToJsonElement(line).jsonObject
+                            if ("id" in o) send(parseChange(o))
+                        }
+                    }
+                    close()
+                } catch (e: Throwable) {
+                    close(e)
+                }
             }
+            awaitClose { call.cancel() }
         }
-        awaitClose { call.cancel() }
-    }
 
     private fun changesRequest(
         since: String,
         filter: SyncFilter?,
         extra: HttpUrl.Builder.() -> Unit,
     ): Pair<HttpUrl, JsonObject?> {
-        val u = url.newBuilder().addPathSegment("_changes")
-            .addQueryParameter("style", "all_docs")
-            .addQueryParameter("since", since)
-            .apply {
-                extra()
-                when (filter) {
-                    is SyncFilter.DocIds -> addQueryParameter("filter", "_doc_ids")
-                    is SyncFilter.Selector -> addQueryParameter("filter", "_selector")
-                    null -> Unit
-                }
-            }.build()
-        val body = when (filter) {
-            is SyncFilter.DocIds -> buildJsonObject { put("doc_ids", JsonArray(filter.ids.map(::JsonPrimitive))) }
-            is SyncFilter.Selector -> buildJsonObject { put("selector", filter.selector) }
-            null -> null
-        }
+        val u =
+            url.newBuilder().addPathSegment("_changes")
+                .addQueryParameter("style", "all_docs")
+                .addQueryParameter("since", since)
+                .apply {
+                    extra()
+                    when (filter) {
+                        is SyncFilter.DocIds -> addQueryParameter("filter", "_doc_ids")
+                        is SyncFilter.Selector -> addQueryParameter("filter", "_selector")
+                        null -> Unit
+                    }
+                }.build()
+        val body =
+            when (filter) {
+                is SyncFilter.DocIds -> buildJsonObject { put("doc_ids", JsonArray(filter.ids.map(::JsonPrimitive))) }
+                is SyncFilter.Selector -> buildJsonObject { put("selector", filter.selector) }
+                null -> null
+            }
         return u to body
     }
 
-    private fun parseChange(o: JsonObject) = RemoteChange(
-        id = o.str("id")!!,
-        revs = o["changes"]!!.jsonArray.map { it.jsonObject.str("rev")!! },
-        deleted = o["deleted"]?.jsonPrimitive?.contentOrNull == "true",
-        seq = o["seq"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.seqString(),
-    )
+    private fun parseChange(o: JsonObject) =
+        RemoteChange(
+            id = o.str("id")!!,
+            revs = o["changes"]!!.jsonArray.map { it.jsonObject.str("rev")!! },
+            deleted = o["deleted"]?.jsonPrimitive?.contentOrNull == "true",
+            seq = o["seq"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.seqString(),
+        )
 
     /** Which of the given revisions the server is missing, and which ancestors of them it has. */
     suspend fun revsDiff(revs: Map<String, List<String>>): Map<String, RevsDiffEntry> {
         if (revs.isEmpty()) return emptyMap()
         val body = JsonObject(revs.mapValues { (_, v) -> JsonArray(v.map(::JsonPrimitive)) })
         val res = call("POST", url.newBuilder().addPathSegment("_revs_diff").build(), body)!!.jsonObject
-        fun list(o: JsonObject, k: String) = o[k]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+
+        fun list(
+            o: JsonObject,
+            k: String,
+        ) = o[k]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
         return res.mapValues { (_, v) -> RevsDiffEntry(list(v.jsonObject, "missing"), list(v.jsonObject, "possible_ancestors")) }
     }
 
     /**
      * Fetches specific revisions with their history (`_bulk_get?revs=true`).
-     * With [attachments], new attachment content comes back inline as base64;
-     * attachments already present in a rev from `attsSince` come back as stubs.
+     * Attachments come back as stubs; fetch their content with [readAttachment].
      */
-    suspend fun bulkGet(revs: List<RevRequest>, attachments: Boolean = false): List<FetchedRev> {
+    suspend fun bulkGet(revs: List<RevRequest>): List<FetchedRev> {
         if (revs.isEmpty()) return emptyList()
-        val body = buildJsonObject {
-            put(
-                "docs",
-                buildJsonArray {
-                    revs.forEach { r ->
-                        add(
-                            buildJsonObject {
-                                put("id", r.id)
-                                r.rev?.let { put("rev", it) }
-                                if (r.attsSince.isNotEmpty()) put("atts_since", JsonArray(r.attsSince.map(::JsonPrimitive)))
-                            },
-                        )
-                    }
-                },
-            )
-        }
-        val u = url.newBuilder().addPathSegment("_bulk_get").addQueryParameter("revs", "true")
-            .apply { if (attachments) addQueryParameter("attachments", "true") }.build()
+        val body =
+            buildJsonObject {
+                put(
+                    "docs",
+                    buildJsonArray {
+                        revs.forEach { r ->
+                            add(
+                                buildJsonObject {
+                                    put("id", r.id)
+                                    r.rev?.let { put("rev", it) }
+                                },
+                            )
+                        }
+                    },
+                )
+            }
+        val u = url.newBuilder().addPathSegment("_bulk_get").addQueryParameter("revs", "true").build()
         val res = call("POST", u, body)!!.jsonObject
         return res["results"]!!.jsonArray.flatMap { r ->
             val id = r.jsonObject.str("id")!!
@@ -246,7 +272,11 @@ class RemoteDb(
      */
     suspend fun bulkDocsNoNewEdits(docs: List<JsonObject>): List<WriteFailure> {
         if (docs.isEmpty()) return emptyList()
-        val body = buildJsonObject { put("new_edits", false); put("docs", JsonArray(docs)) }
+        val body =
+            buildJsonObject {
+                put("new_edits", false)
+                put("docs", JsonArray(docs))
+            }
         val res = call("POST", url.newBuilder().addPathSegment("_bulk_docs").build(), body)!!.jsonArray
         // With new_edits=false CouchDB only lists failures.
         return res.map { it.jsonObject }.filter { it["error"] != null }.map {
@@ -254,16 +284,63 @@ class RemoteDb(
         }
     }
 
-    suspend fun getLocal(id: String): JsonObject? =
-        call("GET", localUrl(id), null, allow404 = true)?.jsonObject
+    /** Streams an attachment's content at revision [rev] into [read], without buffering it. */
+    suspend fun <T> readAttachment(
+        id: String,
+        name: String,
+        rev: String,
+        read: suspend (InputStream) -> T,
+    ): T {
+        val u = url.newBuilder().addPathSegment(id).addPathSegment(name).addQueryParameter("rev", rev).build()
+        http.newCall(Request.Builder().url(u).build()).await().use { res ->
+            if (!res.isSuccessful) throw errorFor(res.code, res.body?.string().orEmpty(), res.header("Retry-After"))
+            return read(res.body!!.byteStream())
+        }
+    }
+
+    /**
+     * Writes one revision whose [attachments] are sent as `follows` parts of a
+     * `multipart/related` body, so large content streams instead of being
+     * base64 inside the JSON. [open] yields each attachment's content by digest.
+     * Returns the refusal, if the server rejected the revision.
+     */
+    suspend fun putWithAttachments(
+        id: String,
+        body: JsonObject,
+        attachments: List<PendingAttachment>,
+        open: (String) -> InputStream?,
+    ): WriteFailure? {
+        val u = url.newBuilder().addPathSegment(id).addQueryParameter("new_edits", "false").build()
+        val req =
+            Request.Builder().url(u)
+                .header("Accept", "application/json")
+                .put(MultipartBody(body.toString(), attachments, open, "couchlite-${UUID.randomUUID()}"))
+                .build()
+        return try {
+            http.newCall(req).await().use { res ->
+                if (!res.isSuccessful) throw errorFor(res.code, res.body?.string().orEmpty(), res.header("Retry-After"))
+            }
+            null
+        } catch (e: CouchException) {
+            // Auth, rate limits and server errors are retried by the caller; other 4xx are refusals.
+            if (e is AuthRequiredException || e.status == 429 || e.status >= 500) throw e
+            WriteFailure(id, body["_rev"]?.jsonPrimitive?.contentOrNull, e.error.orEmpty(), e.reason)
+        }
+    }
+
+    suspend fun getLocal(id: String): JsonObject? = call("GET", localUrl(id), null, allow404 = true)?.jsonObject
 
     /** Writes `_local/<id>` and returns its new `_rev`. */
-    suspend fun putLocal(id: String, body: JsonObject): String =
-        call("PUT", localUrl(id), body)!!.jsonObject.str("rev")!!
+    suspend fun putLocal(
+        id: String,
+        body: JsonObject,
+    ): String = call("PUT", localUrl(id), body)!!.jsonObject.str("rev")!!
 
     /** Deletes `_local/<id>`. Returns false if it didn't exist. */
-    suspend fun deleteLocal(id: String, rev: String): Boolean =
-        call("DELETE", localUrl(id).newBuilder().addQueryParameter("rev", rev).build(), null, allow404 = true) != null
+    suspend fun deleteLocal(
+        id: String,
+        rev: String,
+    ): Boolean = call("DELETE", localUrl(id).newBuilder().addQueryParameter("rev", rev).build(), null, allow404 = true) != null
 
     /**
      * Any other CouchDB call, relative to this database. [path] segments are
@@ -276,10 +353,11 @@ class RemoteDb(
         query: Map<String, String> = emptyMap(),
         body: JsonElement? = null,
     ): JsonElement? {
-        val u = url.newBuilder().apply {
-            path.forEach { addPathSegment(it) }
-            query.forEach { (k, v) -> addQueryParameter(k, v) }
-        }.build()
+        val u =
+            url.newBuilder().apply {
+                path.forEach { addPathSegment(it) }
+                query.forEach { (k, v) -> addQueryParameter(k, v) }
+            }.build()
         return call(method, u, body, allow404 = true)
     }
 
@@ -296,10 +374,15 @@ class RemoteDb(
         allow412: Boolean = false,
         client: OkHttpClient = http,
     ): JsonElement? {
-        val req = Request.Builder().url(u)
-            .header("Accept", "application/json")
-            .method(method, body?.toString()?.toRequestBody(JSON) ?: if (method == "PUT" || method == "POST") ByteArray(0).toRequestBody(JSON) else null)
-            .build()
+        val req =
+            Request.Builder().url(u)
+                .header("Accept", "application/json")
+                .method(
+                    method,
+                    body?.toString()?.toRequestBody(JSON)
+                        ?: if (method == "PUT" || method == "POST") ByteArray(0).toRequestBody(JSON) else null,
+                )
+                .build()
         client.newCall(req).await().use { res ->
             val text = res.body?.string().orEmpty()
             if (res.isSuccessful) return Json.parseToJsonElement(text)
@@ -309,47 +392,67 @@ class RemoteDb(
         }
     }
 
-    private fun errorFor(code: Int, text: String, retryAfter: String? = null): CouchException {
+    private fun errorFor(
+        code: Int,
+        text: String,
+        retryAfter: String? = null,
+    ): CouchException {
         val err = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
         if (code == 401) return AuthRequiredException(err?.str("reason"))
         return CouchException(code, err?.str("error"), err?.str("reason"), retryAfter?.toLongOrNull())
     }
 
     private inner class AuthInterceptor : Interceptor {
-        override fun intercept(chain: Interceptor.Chain): Response = when (val a = auth) {
-            Auth.None -> chain.proceed(chain.request())
-            is Auth.Basic -> chain.proceed(
-                chain.request().newBuilder().header("Authorization", Credentials.basic(a.user, a.password)).build(),
-            )
-            is Auth.Session -> {
-                val cookie = sessionCookie ?: login(chain, a, stale = null)
-                val res = chain.proceed(chain.request().newBuilder().header("Cookie", cookie).build())
-                if (res.code != 401) {
-                    res
-                } else {
-                    res.close()
-                    chain.proceed(chain.request().newBuilder().header("Cookie", login(chain, a, stale = cookie)).build())
+        override fun intercept(chain: Interceptor.Chain): Response =
+            when (val a = auth) {
+                Auth.None -> chain.proceed(chain.request())
+                is Auth.Basic ->
+                    chain.proceed(
+                        chain.request().newBuilder().header("Authorization", Credentials.basic(a.user, a.password)).build(),
+                    )
+                is Auth.Session -> {
+                    val cookie = sessionCookie ?: login(chain, a, stale = null)
+                    val res = chain.proceed(chain.request().newBuilder().header("Cookie", cookie).build())
+                    if (res.code != 401) {
+                        res
+                    } else {
+                        res.close()
+                        chain.proceed(chain.request().newBuilder().header("Cookie", login(chain, a, stale = cookie)).build())
+                    }
                 }
             }
-        }
 
         /**
          * Logs in unless another request already replaced [stale] with a fresh
          * cookie, so a burst of requests after expiry logs in once.
          */
-        private fun login(chain: Interceptor.Chain, a: Auth.Session, stale: String?): String = synchronized(this) {
-            sessionCookie?.takeIf { it != stale }?.let { return it }
-            doLogin(chain, a)
-        }
+        private fun login(
+            chain: Interceptor.Chain,
+            a: Auth.Session,
+            stale: String?,
+        ): String =
+            synchronized(this) {
+                sessionCookie?.takeIf { it != stale }?.let { return it }
+                doLogin(chain, a)
+            }
 
-        private fun doLogin(chain: Interceptor.Chain, a: Auth.Session): String {
-            val body = buildJsonObject { put("name", a.user); put("password", a.password) }
-            val req = Request.Builder().url(server.newBuilder().addPathSegment("_session").build())
-                .post(body.toString().toRequestBody(JSON)).build()
+        private fun doLogin(
+            chain: Interceptor.Chain,
+            a: Auth.Session,
+        ): String {
+            val body =
+                buildJsonObject {
+                    put("name", a.user)
+                    put("password", a.password)
+                }
+            val req =
+                Request.Builder().url(server.newBuilder().addPathSegment("_session").build())
+                    .post(body.toString().toRequestBody(JSON)).build()
             chain.proceed(req).use { res ->
                 if (!res.isSuccessful) throw AuthRequiredException("login failed: HTTP ${res.code}")
-                val cookie = res.headers("Set-Cookie").firstOrNull { it.startsWith("AuthSession=") }
-                    ?.substringBefore(';') ?: throw AuthRequiredException("no AuthSession cookie")
+                val cookie =
+                    res.headers("Set-Cookie").firstOrNull { it.startsWith("AuthSession=") }
+                        ?.substringBefore(';') ?: throw AuthRequiredException("no AuthSession cookie")
                 sessionCookie = cookie
                 return cookie
             }
@@ -361,15 +464,80 @@ class RemoteDb(
     }
 }
 
+/**
+ * `multipart/related`: the JSON document, then one part per attachment in
+ * the order of [parts]. Each attachment's bytes are read from [open] while
+ * writing, and the length is known up front, so the request isn't chunked.
+ */
+private class MultipartBody(
+    json: String,
+    private val parts: List<PendingAttachment>,
+    private val open: (String) -> InputStream?,
+    private val boundary: String,
+) : RequestBody() {
+    private val head = partHead("application/json", null) + json.toByteArray() + CRLF
+    private val partHeads = parts.map { partHead(it.contentType, it) }
+    private val end = "--$boundary--\r\n".toByteArray()
+
+    override fun contentType() = "multipart/related; boundary=$boundary".toMediaType()
+
+    override fun contentLength(): Long =
+        head.size + partHeads.indices.sumOf { partHeads[it].size + parts[it].length + CRLF.size } + end.size
+
+    override fun writeTo(sink: BufferedSink) {
+        sink.write(head)
+        parts.forEachIndexed { i, part ->
+            sink.write(partHeads[i])
+            val input = open(part.digest) ?: throw IOException("attachment ${part.name} is no longer stored")
+            var written = 0L
+            input.use {
+                val buf = ByteArray(BUFFER_BYTES)
+                while (true) {
+                    val n = it.read(buf)
+                    if (n < 0) break
+                    sink.write(buf, 0, n)
+                    written += n
+                }
+            }
+            check(written == part.length) { "attachment ${part.name} is $written bytes, expected ${part.length}" }
+            sink.write(CRLF)
+        }
+        sink.write(end)
+    }
+
+    private fun partHead(
+        type: String,
+        part: PendingAttachment?,
+    ): ByteArray {
+        val disposition = part?.let { "Content-Disposition: attachment; filename=\"${it.name.replace("\"", "%22")}\"\r\n" }.orEmpty()
+        return "--$boundary\r\nContent-Type: $type\r\n$disposition\r\n".toByteArray()
+    }
+
+    private companion object {
+        val CRLF = "\r\n".toByteArray()
+        const val BUFFER_BYTES = 64 * 1024
+    }
+}
+
 private fun JsonObject.str(key: String) = (this[key] as? JsonPrimitive)?.contentOrNull
 
 /** CouchDB 1.x used integer seqs; 2.x+ uses strings. Keep either as text. */
 private fun JsonElement.seqString() = (this as? JsonPrimitive)?.content ?: toString()
 
-private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
-    cont.invokeOnCancellation { cancel() }
-    enqueue(object : Callback {
-        override fun onResponse(call: Call, response: Response) = cont.resume(response) { _, _, _ -> response.close() }
-        override fun onFailure(call: Call, e: IOException) = cont.resumeWithException(e)
-    })
-}
+private suspend fun Call.await(): Response =
+    suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation { cancel() }
+        enqueue(
+            object : Callback {
+                override fun onResponse(
+                    call: Call,
+                    response: Response,
+                ) = cont.resume(response) { _, _, _ -> response.close() }
+
+                override fun onFailure(
+                    call: Call,
+                    e: IOException,
+                ) = cont.resumeWithException(e)
+            },
+        )
+    }
