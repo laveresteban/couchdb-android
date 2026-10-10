@@ -78,4 +78,21 @@ class SqlLocalStoreTest {
         assertEquals(listOf("b", "a"), store.changesSince(0, 10).map { it.id })
         assertEquals(listOf("a"), store.changesSince(store.changesSince(0, 10).first().seq, 10).map { it.id })
     }
+
+    @Test
+    fun `change listeners hear about committed writes only`() {
+        val heard = mutableListOf<String>()
+        store.onChange = { heard += it }
+        store.put("a", body("1"), null)
+        assertEquals(listOf("a"), heard)
+        assertFailsWith<IllegalStateException> {
+            store.transaction {
+                store.put("b", body("1"), null)
+                assertEquals(listOf("a"), heard) // not yet: still inside the transaction
+                error("roll back")
+            }
+        }
+        assertNull(store.get("b"))
+        assertEquals(listOf("a"), heard)
+    }
 }

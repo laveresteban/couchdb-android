@@ -87,4 +87,16 @@ class ChangesFeedTest {
         assertEquals("live", withTimeout(10_000) { seen.await() })
         withTimeout(10_000) { job.join() }
     }
+
+    @Test
+    fun `continuous reader saves its place on stop even mid-batch`() = runBlocking {
+        save("a")
+        save("b")
+        // Shards don't promise an order, so stop after whichever change comes first.
+        val feed = ChangesFeed(db, checkpoint = "s", continuous = true, batchSize = 100)
+        var first: String? = null
+        withTimeout(10_000) { feed.asFlow().collect { first = it.id; feed.stop() } }
+        val next = withTimeout(10_000) { ChangesFeed(db, checkpoint = "s", continuous = true).asFlow().first().id }
+        assertEquals(setOf("a", "b"), setOf(first, next))
+    }
 }

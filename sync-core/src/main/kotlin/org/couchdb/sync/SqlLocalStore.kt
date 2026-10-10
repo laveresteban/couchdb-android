@@ -9,6 +9,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.coroutines.sync.Mutex
 import java.util.UUID
 
 /** A change in the local database: the doc's latest local sequence number. */
@@ -32,9 +33,16 @@ data class LocalChange(val id: String, val seq: Long)
 class SqlLocalStore(private val db: SqlDriver) {
     private val lock = Any()
 
+    /** Held by a [Replicator] while it syncs this store, so two syncs don't interleave. */
+    val syncLock = Mutex()
+
+    // Docs whose winner changed in the current transaction; reported after commit.
+    private var depth = 0
+    private val changedIds = LinkedHashSet<String>()
+
     init {
         synchronized(lock) {
-            db.transaction {
+            tx {
                 db.execute(
                     """CREATE TABLE IF NOT EXISTS docs (
                         doc_id TEXT PRIMARY KEY, winning_rev TEXT NOT NULL,
@@ -66,11 +74,33 @@ class SqlLocalStore(private val db: SqlDriver) {
 
     private var indexed: List<String> = synchronized(lock) { db.query("SELECT field FROM indexes") { it.string(0)!! } }
 
-    /** Called with a doc id after its winning revision changes (local write or replication). */
+    /**
+     * Called with a doc id after its winning revision changes (local write or
+     * replication), once the change is committed.
+     */
     @Volatile var onChange: ((String) -> Unit)? = null
 
     /** Runs [block] atomically. Store calls inside it join the transaction. */
-    fun <T> transaction(block: () -> T): T = synchronized(lock) { db.transaction(block) }
+    fun <T> transaction(block: () -> T): T = synchronized(lock) { tx(block) }
+
+    /** [SqlDriver.transaction] that reports changed docs to [onChange] after the outermost commit. */
+    private fun <T> tx(block: () -> T): T {
+        depth++
+        val result = try {
+            db.transaction(block)
+        } catch (e: Throwable) {
+            if (depth == 1) changedIds.clear()
+            throw e
+        } finally {
+            depth--
+        }
+        if (depth == 0 && changedIds.isNotEmpty()) {
+            val ids = changedIds.toList()
+            changedIds.clear()
+            ids.forEach { onChange?.invoke(it) }
+        }
+        return result
+    }
 
     /** Stable id of this store, used to name replication checkpoints. */
     val uuid: String get() = synchronized(lock) { meta("uuid")!! }
@@ -96,7 +126,7 @@ class SqlLocalStore(private val db: SqlDriver) {
      */
     fun put(id: String, body: JsonObject, prevRev: String?, deleted: Boolean = false): String =
         synchronized(lock) {
-            db.transaction {
+            tx {
                 val current = winner(id)
                 val parent: String? = when {
                     prevRev != null -> {
@@ -126,8 +156,8 @@ class SqlLocalStore(private val db: SqlDriver) {
     fun insertRevision(id: String, history: List<String>, body: JsonObject, deleted: Boolean): Boolean =
         synchronized(lock) {
             require(history.isNotEmpty())
-            db.transaction {
-                if (hasRev(id, history[0])) return@transaction false
+            tx {
+                if (hasRev(id, history[0])) return@tx false
                 // Add unknown ancestors oldest first so each one's parent exists.
                 for (i in history.lastIndex downTo 1) {
                     val rev = history[i]
@@ -221,7 +251,7 @@ class SqlLocalStore(private val db: SqlDriver) {
             listOf(id, win.first, if (win.second) 1 else 0, seq),
         )
         reindex(id, if (win.second) null else bodyOf(id, win.first))
-        onChange?.invoke(id)
+        changedIds += id
     }
 
     private fun bodyOf(id: String, rev: String): JsonObject? =
