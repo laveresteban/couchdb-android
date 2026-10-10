@@ -38,6 +38,12 @@ jobs:
         run: ./gradlew :sync-core:ktlintCheck :sync-core:test :sync-core:koverVerify
         env:
           ANDROID_HOME: "" # runners ship an SDK; keep the Android modules out of JVM jobs
+      - name: Keep test reports when a test fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-core-test-reports
+          path: sync-core/build/test-results/test
 
   conformance:
     runs-on: ubuntu-latest

@@ -20,12 +20,10 @@ dependencies {
 // Runs the shared specs (copied in by scripts/conformance.sh) and the SDK
 // specs in sdk-specs/, with the compiled step classes on the classpath.
 tasks.register<Exec>("gauge") {
-    dependsOn("classes", configurations.runtimeClasspath)
+    // The classpath names jar files, so build them (classes alone don't).
+    dependsOn("classes", project(":sync-core").tasks.named("jar"), project(":sync-core").tasks.named("testFixturesJar"))
     workingDir = projectDir
     val tags = (project.findProperty("tags") as String?) ?: "documents | changes | sync | databases | attachments | auth | sdk"
     commandLine("gauge", "run", "--tags", tags, "specs", "sdk-specs")
-    doFirst {
-        val cp = sourceSets["main"].runtimeClasspath.files.joinToString(File.pathSeparator)
-        environment("gauge_custom_classpath", cp)
-    }
+    environment("gauge_custom_classpath", sourceSets.named("main").map { it.runtimeClasspath.asPath })
 }
