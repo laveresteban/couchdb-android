@@ -124,7 +124,7 @@ parts instead of inline base64.
 ## Tests
 
 ```sh
-docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.4
+docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.5.2
 ./gradlew :sync-core:test                       # unit tests; CouchDB and PouchDB tests when reachable
 ./gradlew :sync-core:koverVerify                 # line coverage gate (88%)
 ./gradlew :android:testDebugUnitTest             # Robolectric: SQLite driver, lifecycle, workers, scheduling
