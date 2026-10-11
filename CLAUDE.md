@@ -21,7 +21,7 @@ No generated code: the Kotlin generator drops user fields on the open
 ## Commands
 
 ```sh
-docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.4
+docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.5.2
 ./gradlew ktlintCheck                              # formatting, all modules
 ./gradlew :sync-core:test :sync-core:koverVerify   # JVM tests, 88% line gate
 ./gradlew :android:testDebugUnitTest :android:koverVerify   # Robolectric, 65% gate

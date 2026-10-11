@@ -9,7 +9,7 @@ encrypted storage. Read it alongside the [main README](../README.md).
 1. Start CouchDB:
 
    ```sh
-   docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.4
+   docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.5.2
    ```
 
 2. Install the app on an emulator or a connected device (needs the Android SDK,
