@@ -26,9 +26,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: "17" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: "20" }
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Install PouchDB for the interop test
         run: npm ci
         working-directory: interop
@@ -63,7 +63,7 @@ jobs:
           path: couchdb-sdk-generator
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: "17" }
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - uses: getgauge/setup-gauge@159e01e975eeae8bd1a097017590fefbc36e2d4e # master, Oct 2026 (no tags)
         with:
           gauge-plugins: java
@@ -81,11 +81,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: "17" }
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
           # The default also installs 'tools', which newer SDK tooling no longer has.
           packages: platform-tools
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Lint and format check
         run: ./gradlew ktlintCheck :android:lintRelease :example-notes:lintDebug
       - name: Robolectric unit tests and coverage
@@ -96,13 +96,13 @@ jobs:
   device:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "17" }
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Start CouchDB for device tests
         run: docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=password couchdb:3.5.2
       - name: Enable KVM
