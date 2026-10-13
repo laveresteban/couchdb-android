@@ -1,0 +1,36 @@
+# Advisory PR review. Posts COMMENT-type reviews only and never blocks a merge:
+# the job is continue-on-error, and the repo has no required status checks.
+name: claude-review
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Same-repo, non-draft PRs only: forks and Dependabot get no secrets.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review this pull request (PR #${{ github.event.pull_request.number }}).
+            Read the CLAUDE.md files in the repo root and in the directories the PR touches, and check the diff against them.
+            Look for real bugs in the changed lines and for CLAUDE.md violations. Skip style nits, anything a linter or CI catches, and pre-existing issues.
+            Post one review with `gh pr review --comment`, not --approve or --request-changes. In the body, list each issue with its file and line, citing the code. If there are no issues, say so in one line.
+            Keep it brief.
