@@ -15,8 +15,8 @@ jobs:
           COUCHDB_USER: admin
           COUCHDB_PASSWORD: password
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: "17" }
       - uses: gradle/actions/setup-gradle@v4
       - name: Wait for CouchDB
@@ -36,12 +36,12 @@ jobs:
           COUCHDB_USER: admin
           COUCHDB_PASSWORD: password
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: laveresteban/couchdb-sdk-generator
           path: couchdb-sdk-generator
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: "17" }
       - uses: gradle/actions/setup-gradle@v4
       - uses: getgauge/setup-gauge@159e01e975eeae8bd1a097017590fefbc36e2d4e # master, Oct 2026 (no tags)
@@ -57,8 +57,8 @@ jobs:
   android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: "17" }
       - uses: android-actions/setup-android@v3
         with:
