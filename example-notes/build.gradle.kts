@@ -29,7 +29,7 @@ dependencies {
     // The SDK. Its sync-core dependency brings kotlinx-serialization for the JSON bodies.
     implementation(project(":android"))
 
-    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
 
