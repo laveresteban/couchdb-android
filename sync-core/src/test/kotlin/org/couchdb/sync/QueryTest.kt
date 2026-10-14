@@ -100,7 +100,14 @@ class QueryTest {
             val db = CouchLite(store())
             val q = Query(sel("""{"age":{"${'$'}gte":40,"${'$'}type":"number"}}"""))
             val seen = mutableListOf<List<String>>()
-            val job = launch { db.observe(q).take(2).toList().forEach { seen += it.map(Doc::id) } }
+            val job =
+                launch {
+                    db
+                        .observe(q)
+                        .take(2)
+                        .toList()
+                        .forEach { seen += it.map(Doc::id) }
+                }
             kotlinx.coroutines.delay(300) // let the collector subscribe
             db.put("eve", json("""{"age":44}"""))
             withTimeout(5_000) { job.join() }

@@ -32,13 +32,22 @@ sealed interface Resolution {
     data object KeepWinner : Resolution
 
     /** Write [body] as the new winner and delete the other branches. */
-    data class Merge(val body: JsonObject) : Resolution
+    data class Merge(
+        val body: JsonObject,
+    ) : Resolution
 
     /** Make the losing revision [rev] the new winner, with its body. */
-    data class Pick(val rev: String) : Resolution
+    data class Pick(
+        val rev: String,
+    ) : Resolution
 }
 
-data class AttachmentInfo(val name: String, val contentType: String, val length: Long, val digest: String)
+data class AttachmentInfo(
+    val name: String,
+    val contentType: String,
+    val length: Long,
+    val digest: String,
+)
 
 /**
  * An offline-first database. Every read and write is local; [replicator]
@@ -111,9 +120,13 @@ class CouchLite(
         id: String? = null,
         read: () -> T,
     ): Flow<T> =
-        changed.onSubscription { emit(id.orEmpty()) }
+        changed
+            .onSubscription { emit(id.orEmpty()) }
             .filter { id == null || it == id }
-            .conflate().map { read() }.distinctUntilChanged().flowOn(io)
+            .conflate()
+            .map { read() }
+            .distinctUntilChanged()
+            .flowOn(io)
 
     // ---- Attachments ----
 

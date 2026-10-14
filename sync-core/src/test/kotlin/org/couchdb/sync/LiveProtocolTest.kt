@@ -45,8 +45,11 @@ class LiveProtocolTest {
         runBlocking<Unit> {
             couch.on("POST", "/_session") { _ ->
                 val name = if (couch.requests.count { it.path == "/_session" } > 1) "fresh" else "first"
-                MockResponse().setResponseCode(200).setHeader("Set-Cookie", "AuthSession=$name; Path=/; HttpOnly")
-                    .setHeader("Content-Type", "application/json").setBody("""{"ok":true}""")
+                MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Set-Cookie", "AuthSession=$name; Path=/; HttpOnly")
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("""{"ok":true}""")
             }
             couch.on("GET", "/db") { request ->
                 val cookie = request.getHeader("Cookie")

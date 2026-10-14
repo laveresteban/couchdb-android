@@ -42,7 +42,9 @@ data class SyncStatus(
  * Holds the local database and the sync loop. Every edit goes to the local
  * database first, so the screens work with no connection; sync runs on top.
  */
-class NotesViewModel(app: Application) : AndroidViewModel(app) {
+class NotesViewModel(
+    app: Application,
+) : AndroidViewModel(app) {
     private val settings = (app as NotesApp).settings
 
     // Opened once and shared with SyncWorker. Encryption must match there.
@@ -59,12 +61,13 @@ class NotesViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Notes with pinned ones first, then newest first. Updates on local edits and on sync. */
     val notes: StateFlow<List<Note>> =
-        db.observe(
-            Query(
-                selector = buildJsonObject { put("type", "note") },
-                sort = listOf("pinned" to false, "updatedAt" to false),
-            ),
-        ).map { docs -> docs.map { Note.from(it) } }
+        db
+            .observe(
+                Query(
+                    selector = buildJsonObject { put("type", "note") },
+                    sort = listOf("pinned" to false, "updatedAt" to false),
+                ),
+            ).map { docs -> docs.map { Note.from(it) } }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {

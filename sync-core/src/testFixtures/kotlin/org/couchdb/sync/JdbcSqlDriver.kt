@@ -5,7 +5,9 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 
 /** sqlite-jdbc driver for JVM tests. Shared with the Gauge module through test fixtures. */
-class JdbcSqlDriver(url: String = "jdbc:sqlite::memory:") : SqlDriver {
+class JdbcSqlDriver(
+    url: String = "jdbc:sqlite::memory:",
+) : SqlDriver {
     private val conn: Connection = DriverManager.getConnection(url)
     private var depth = 0
 

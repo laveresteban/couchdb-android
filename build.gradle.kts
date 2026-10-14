@@ -8,17 +8,17 @@ buildscript {
             google()
             mavenCentral()
         }
-        dependencies { classpath("com.android.tools.build:gradle:8.7.3") }
+        dependencies { classpath("com.android.tools.build:gradle:8.13.0") }
     }
 }
 
 plugins {
-    kotlin("jvm") version "2.0.21" apply false
-    kotlin("plugin.serialization") version "2.0.21" apply false
-    kotlin("plugin.compose") version "2.0.21" apply false // example-notes uses Jetpack Compose
-    id("org.jetbrains.kotlinx.kover") version "0.9.1" apply false
-    id("org.jlleitschuh.gradle.ktlint") version "12.1.1" apply false
-    id("com.vanniktech.maven.publish") version "0.30.0" apply false
+    kotlin("jvm") version "2.4.21" apply false
+    kotlin("plugin.serialization") version "2.4.21" apply false
+    kotlin("plugin.compose") version "2.4.21" apply false // example-notes uses Jetpack Compose
+    id("org.jetbrains.kotlinx.kover") version "0.9.11" apply false
+    id("org.jlleitschuh.gradle.ktlint") version "14.2.0" apply false
+    id("com.vanniktech.maven.publish") version "0.37.0" apply false
 }
 
 // Every module is linted with the same ktlint rules.

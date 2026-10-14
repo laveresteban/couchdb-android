@@ -39,12 +39,20 @@ sealed interface SyncState {
     data object Idle : SyncState
 
     /** [docs] revisions pulled so far; [pending] changes the server has left after this batch, if it says. */
-    data class Pulling(val docs: Int, val pending: Long?) : SyncState
+    data class Pulling(
+        val docs: Int,
+        val pending: Long?,
+    ) : SyncState
 
     /** [docs] revisions pushed so far; [pending] local changes not yet pushed. */
-    data class Pushing(val docs: Int, val pending: Long) : SyncState
+    data class Pushing(
+        val docs: Int,
+        val pending: Long,
+    ) : SyncState
 
-    data class Error(val error: Throwable) : SyncState
+    data class Error(
+        val error: Throwable,
+    ) : SyncState
 }
 
 /**
@@ -136,7 +144,8 @@ class Replicator(
             val page = remote.changes(since, batchSize, filter = filter)
             val requests =
                 io {
-                    store.missingRevs(page.results.associate { it.id to it.revs })
+                    store
+                        .missingRevs(page.results.associate { it.id to it.revs })
                         .flatMap { (id, revs) -> revs.map { RevRequest(id, it) } }
                 }
             for (f in remote.bulkGet(requests)) {
@@ -336,7 +345,11 @@ class Replicator(
         }
 
     /** A revision ready to send: its JSON, and the attachments that go as multipart parts. */
-    private class WireDoc(val id: String, val json: JsonObject, val follows: List<PendingAttachment>)
+    private class WireDoc(
+        val id: String,
+        val json: JsonObject,
+        val follows: List<PendingAttachment>,
+    )
 
     /**
      * Builds the wire form of a local revision: body plus `_id`, `_rev`,
@@ -394,7 +407,10 @@ class Replicator(
         return WireDoc(id, json, follows)
     }
 
-    private data class Checkpoint(val session: String, val seq: String?)
+    private data class Checkpoint(
+        val session: String,
+        val seq: String?,
+    )
 
     private suspend fun readCheckpoint(id: String): Checkpoint {
         val local = io { store.getLocal(id) }
@@ -430,7 +446,9 @@ internal fun history(doc: JsonObject): List<String> {
     return revs["ids"]!!.jsonArray.mapIndexed { i, h -> "${start - i}-${h.jsonPrimitive.content}" }
 }
 
-private class MissingAttachmentException(message: String) : RuntimeException(message)
+private class MissingAttachmentException(
+    message: String,
+) : RuntimeException(message)
 
 /**
  * Writes `_local/<id>` using [knownRev] (our last write) as its `_rev`. If
@@ -451,6 +469,11 @@ internal suspend fun putLocalWithRev(
             if (e.status != 409) throw e
         }
     }
-    val current = remote.getLocal(id)?.get("_rev")?.jsonPrimitive?.contentOrNull
+    val current =
+        remote
+            .getLocal(id)
+            ?.get("_rev")
+            ?.jsonPrimitive
+            ?.contentOrNull
     return remote.putLocal(id, withRev(current))
 }

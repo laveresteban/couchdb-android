@@ -45,41 +45,82 @@ open class CouchException(
     val retryAfterSeconds: Long? = null,
 ) : IOException("HTTP $status: $error ($reason)")
 
-class AuthRequiredException(reason: String?) : CouchException(401, "unauthorized", reason)
+class AuthRequiredException(
+    reason: String?,
+) : CouchException(401, "unauthorized", reason)
 
 sealed interface Auth {
     data object None : Auth
 
-    data class Basic(val user: String, val password: String) : Auth
+    data class Basic(
+        val user: String,
+        val password: String,
+    ) : Auth
 
     /** Cookie auth via `POST /_session`; logs in again when the cookie expires. */
-    data class Session(val user: String, val password: String) : Auth
+    data class Session(
+        val user: String,
+        val password: String,
+    ) : Auth
 }
 
 /** One row of `_changes?style=all_docs`. */
-data class RemoteChange(val id: String, val revs: List<String>, val deleted: Boolean, val seq: String? = null)
+data class RemoteChange(
+    val id: String,
+    val revs: List<String>,
+    val deleted: Boolean,
+    val seq: String? = null,
+)
 
-data class ChangesPage(val results: List<RemoteChange>, val lastSeq: String, val pending: Long?)
+data class ChangesPage(
+    val results: List<RemoteChange>,
+    val lastSeq: String,
+    val pending: Long?,
+)
 
 /** A `_bulk_get` result: the doc with `_revisions`, or the server's [error] (e.g. `not_found`). */
-data class FetchedRev(val id: String, val doc: JsonObject?, val error: String? = null)
+data class FetchedRev(
+    val id: String,
+    val doc: JsonObject?,
+    val error: String? = null,
+)
 
 /** One `_bulk_get` request entry; a null [rev] means the winning revision. */
-data class RevRequest(val id: String, val rev: String? = null)
+data class RevRequest(
+    val id: String,
+    val rev: String? = null,
+)
 
 /** An attachment to send with its own part in a multipart write (see [RemoteDb.putWithAttachments]). */
-data class PendingAttachment(val name: String, val contentType: String, val length: Long, val digest: String)
+data class PendingAttachment(
+    val name: String,
+    val contentType: String,
+    val length: Long,
+    val digest: String,
+)
 
-data class RevsDiffEntry(val missing: List<String>, val possibleAncestors: List<String>)
+data class RevsDiffEntry(
+    val missing: List<String>,
+    val possibleAncestors: List<String>,
+)
 
 /** A revision the server refused to store, e.g. `forbidden` from `validate_doc_update`. */
-data class WriteFailure(val id: String, val rev: String?, val error: String, val reason: String?)
+data class WriteFailure(
+    val id: String,
+    val rev: String?,
+    val error: String,
+    val reason: String?,
+)
 
 /** Limits sync to part of a database. Pull filters on the server, push filters locally. */
 sealed interface SyncFilter {
-    data class DocIds(val ids: List<String>) : SyncFilter
+    data class DocIds(
+        val ids: List<String>,
+    ) : SyncFilter
 
-    data class Selector(val selector: JsonObject) : SyncFilter
+    data class Selector(
+        val selector: JsonObject,
+    ) : SyncFilter
 }
 
 /**
@@ -99,7 +140,8 @@ class RemoteDb(
     @Volatile private var sessionCookie: String? = null
 
     private val http =
-        client.newBuilder()
+        client
+            .newBuilder()
             .readTimeout(90, TimeUnit.SECONDS)
             .addInterceptor(AuthInterceptor())
             .build()
@@ -160,8 +202,12 @@ class RemoteDb(
                     addQueryParameter("heartbeat", heartbeatMs.toString())
                 }
             val req =
-                Request.Builder().url(u).header("Accept", "application/json")
-                    .method(if (body == null) "GET" else "POST", body?.toString()?.toRequestBody(JSON)).build()
+                Request
+                    .Builder()
+                    .url(u)
+                    .header("Accept", "application/json")
+                    .method(if (body == null) "GET" else "POST", body?.toString()?.toRequestBody(JSON))
+                    .build()
             val call = waiting(heartbeatMs).newCall(req)
             // The read below blocks on the socket; closing the flow cancels the
             // call, which unblocks it. Heartbeats would otherwise keep it alive.
@@ -191,7 +237,9 @@ class RemoteDb(
         extra: HttpUrl.Builder.() -> Unit,
     ): Pair<HttpUrl, JsonObject?> {
         val u =
-            url.newBuilder().addPathSegment("_changes")
+            url
+                .newBuilder()
+                .addPathSegment("_changes")
                 .addQueryParameter("style", "all_docs")
                 .addQueryParameter("since", since)
                 .apply {
@@ -254,7 +302,12 @@ class RemoteDb(
                     },
                 )
             }
-        val u = url.newBuilder().addPathSegment("_bulk_get").addQueryParameter("revs", "true").build()
+        val u =
+            url
+                .newBuilder()
+                .addPathSegment("_bulk_get")
+                .addQueryParameter("revs", "true")
+                .build()
         val res = call("POST", u, body)!!.jsonObject
         return res["results"]!!.jsonArray.flatMap { r ->
             val id = r.jsonObject.str("id")!!
@@ -295,8 +348,19 @@ class RemoteDb(
         rev: String,
         read: suspend (InputStream, gzipped: Boolean) -> T,
     ): T {
-        val u = url.newBuilder().addPathSegment(id).addPathSegment(name).addQueryParameter("rev", rev).build()
-        val req = Request.Builder().url(u).header("Accept-Encoding", "gzip").build()
+        val u =
+            url
+                .newBuilder()
+                .addPathSegment(id)
+                .addPathSegment(name)
+                .addQueryParameter("rev", rev)
+                .build()
+        val req =
+            Request
+                .Builder()
+                .url(u)
+                .header("Accept-Encoding", "gzip")
+                .build()
         http.newCall(req).await().use { res ->
             if (!res.isSuccessful) throw errorFor(res.code, res.body?.string().orEmpty(), res.header("Retry-After"))
             return read(res.body!!.byteStream(), res.header("Content-Encoding") == "gzip")
@@ -315,9 +379,16 @@ class RemoteDb(
         attachments: List<PendingAttachment>,
         open: (String) -> InputStream?,
     ): WriteFailure? {
-        val u = url.newBuilder().addPathSegment(id).addQueryParameter("new_edits", "false").build()
+        val u =
+            url
+                .newBuilder()
+                .addPathSegment(id)
+                .addQueryParameter("new_edits", "false")
+                .build()
         val req =
-            Request.Builder().url(u)
+            Request
+                .Builder()
+                .url(u)
                 .header("Accept", "application/json")
                 .put(MultipartBody(body.toString(), attachments, open, "couchlite-${UUID.randomUUID()}"))
                 .build()
@@ -359,17 +430,24 @@ class RemoteDb(
         body: JsonElement? = null,
     ): JsonElement? {
         val u =
-            url.newBuilder().apply {
-                path.forEach { addPathSegment(it) }
-                query.forEach { (k, v) -> addQueryParameter(k, v) }
-            }.build()
+            url
+                .newBuilder()
+                .apply {
+                    path.forEach { addPathSegment(it) }
+                    query.forEach { (k, v) -> addQueryParameter(k, v) }
+                }.build()
         return call(method, u, body, allow404 = true)
     }
 
     /** Deletes the remote database. Returns false if it didn't exist. */
     suspend fun destroy(): Boolean = call("DELETE", url, null, allow404 = true) != null
 
-    private fun localUrl(id: String) = url.newBuilder().addPathSegment("_local").addPathSegment(id).build()
+    private fun localUrl(id: String) =
+        url
+            .newBuilder()
+            .addPathSegment("_local")
+            .addPathSegment(id)
+            .build()
 
     private suspend fun call(
         method: String,
@@ -380,14 +458,15 @@ class RemoteDb(
         client: OkHttpClient = http,
     ): JsonElement? {
         val req =
-            Request.Builder().url(u)
+            Request
+                .Builder()
+                .url(u)
                 .header("Accept", "application/json")
                 .method(
                     method,
                     body?.toString()?.toRequestBody(JSON)
                         ?: if (method == "PUT" || method == "POST") ByteArray(0).toRequestBody(JSON) else null,
-                )
-                .build()
+                ).build()
         client.newCall(req).await().use { res ->
             val text = res.body?.string().orEmpty()
             if (res.isSuccessful) return Json.parseToJsonElement(text)
@@ -413,16 +492,33 @@ class RemoteDb(
                 Auth.None -> chain.proceed(chain.request())
                 is Auth.Basic ->
                     chain.proceed(
-                        chain.request().newBuilder().header("Authorization", Credentials.basic(a.user, a.password)).build(),
+                        chain
+                            .request()
+                            .newBuilder()
+                            .header("Authorization", Credentials.basic(a.user, a.password))
+                            .build(),
                     )
                 is Auth.Session -> {
                     val cookie = sessionCookie ?: login(chain, a, stale = null)
-                    val res = chain.proceed(chain.request().newBuilder().header("Cookie", cookie).build())
+                    val res =
+                        chain.proceed(
+                            chain
+                                .request()
+                                .newBuilder()
+                                .header("Cookie", cookie)
+                                .build(),
+                        )
                     if (res.code != 401) {
                         res
                     } else {
                         res.close()
-                        chain.proceed(chain.request().newBuilder().header("Cookie", login(chain, a, stale = cookie)).build())
+                        chain.proceed(
+                            chain
+                                .request()
+                                .newBuilder()
+                                .header("Cookie", login(chain, a, stale = cookie))
+                                .build(),
+                        )
                     }
                 }
             }
@@ -451,12 +547,17 @@ class RemoteDb(
                     put("password", a.password)
                 }
             val req =
-                Request.Builder().url(server.newBuilder().addPathSegment("_session").build())
-                    .post(body.toString().toRequestBody(JSON)).build()
+                Request
+                    .Builder()
+                    .url(server.newBuilder().addPathSegment("_session").build())
+                    .post(body.toString().toRequestBody(JSON))
+                    .build()
             chain.proceed(req).use { res ->
                 if (!res.isSuccessful) throw AuthRequiredException("login failed: HTTP ${res.code}")
                 val cookie =
-                    res.headers("Set-Cookie").firstOrNull { it.startsWith("AuthSession=") }
+                    res
+                        .headers("Set-Cookie")
+                        .firstOrNull { it.startsWith("AuthSession=") }
                         ?.substringBefore(';') ?: throw AuthRequiredException("no AuthSession cookie")
                 sessionCookie = cookie
                 return cookie

@@ -20,7 +20,13 @@ class SqlLocalStoreTest {
         assertTrue(r1.startsWith("1-"))
         val r2 = store.put("a", body("2"), r1)
         assertTrue(r2.startsWith("2-"))
-        assertEquals("2", store.get("a")!!.body["v"]!!.jsonPrimitive.content)
+        assertEquals(
+            "2",
+            store
+                .get("a")!!
+                .body["v"]!!
+                .jsonPrimitive.content,
+        )
         store.delete("a", r2)
         assertNull(store.get("a"))
     }

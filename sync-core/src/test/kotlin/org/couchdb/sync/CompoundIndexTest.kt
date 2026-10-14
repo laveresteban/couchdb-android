@@ -30,18 +30,33 @@ class CompoundIndexTest {
 
     private val scalars: List<JsonElement?> =
         listOf(
-            null, JsonNull, JsonPrimitive(false), JsonPrimitive(true), JsonPrimitive(-1e9), JsonPrimitive(-0.5),
-            JsonPrimitive(0), JsonPrimitive(0.25), JsonPrimitive(1e12), JsonPrimitive(""), JsonPrimitive("a"),
-            JsonPrimitive("a\u0000"), JsonPrimitive("ab"), JsonPrimitive("b"), JsonPrimitive("é"), JsonPrimitive("中文"),
+            null,
+            JsonNull,
+            JsonPrimitive(false),
+            JsonPrimitive(true),
+            JsonPrimitive(-1e9),
+            JsonPrimitive(-0.5),
+            JsonPrimitive(0),
+            JsonPrimitive(0.25),
+            JsonPrimitive(1e12),
+            JsonPrimitive(""),
+            JsonPrimitive("a"),
+            JsonPrimitive("a\u0000"),
+            JsonPrimitive("ab"),
+            JsonPrimitive("b"),
+            JsonPrimitive("é"),
+            JsonPrimitive("中文"),
             JsonArray(listOf(JsonPrimitive(1))),
         )
 
     @Test
     fun `sort keys order single values like Mango compare`() {
-        for (a in scalars) for (b in scalars) {
-            val expected = Integer.signum(cmp(a, b))
-            val actual = Integer.signum(sortKey(single(a), listOf("f")).compareTo(sortKey(single(b), listOf("f"))))
-            assertEquals(expected, actual, "$a vs $b")
+        for (a in scalars) {
+            for (b in scalars) {
+                val expected = Integer.signum(cmp(a, b))
+                val actual = Integer.signum(sortKey(single(a), listOf("f")).compareTo(sortKey(single(b), listOf("f"))))
+                assertEquals(expected, actual, "$a vs $b")
+            }
         }
     }
 
@@ -49,12 +64,18 @@ class CompoundIndexTest {
     fun `sort keys order field tuples like comparing field by field`() {
         val fields = listOf("f", "g")
         val pairs = listOf(null, JsonNull, JsonPrimitive(false), JsonPrimitive(2), JsonPrimitive("x"), JsonPrimitive("xy"))
-        for (a1 in pairs) for (a2 in pairs) for (b1 in pairs) for (b2 in pairs) {
-            val a = JsonObject(listOfNotNull(a1?.let { "f" to it }, a2?.let { "g" to it }).toMap())
-            val b = JsonObject(listOfNotNull(b1?.let { "f" to it }, b2?.let { "g" to it }).toMap())
-            val expected = cmp(a1, b1).takeIf { it != 0 } ?: cmp(a2, b2)
-            val actual = sortKey(a, fields).compareTo(sortKey(b, fields))
-            assertEquals(Integer.signum(expected), Integer.signum(actual), "$a vs $b")
+        for (a1 in pairs) {
+            for (a2 in pairs) {
+                for (b1 in pairs) {
+                    for (b2 in pairs) {
+                        val a = JsonObject(listOfNotNull(a1?.let { "f" to it }, a2?.let { "g" to it }).toMap())
+                        val b = JsonObject(listOfNotNull(b1?.let { "f" to it }, b2?.let { "g" to it }).toMap())
+                        val expected = cmp(a1, b1).takeIf { it != 0 } ?: cmp(a2, b2)
+                        val actual = sortKey(a, fields).compareTo(sortKey(b, fields))
+                        assertEquals(Integer.signum(expected), Integer.signum(actual), "$a vs $b")
+                    }
+                }
+            }
         }
     }
 

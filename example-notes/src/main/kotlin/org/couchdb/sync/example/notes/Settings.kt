@@ -11,13 +11,19 @@ import org.couchdb.sync.RemoteDb
 const val DB_NAME = "notes"
 
 /** Where the CouchDB server is and which account to sign in with. */
-data class ServerConfig(val url: String, val user: String, val password: String) {
+data class ServerConfig(
+    val url: String,
+    val user: String,
+    val password: String,
+) {
     /** The database on the server, for example `http://10.0.2.2:5984/notes`. */
     fun remote(database: String = DB_NAME): RemoteDb = RemoteDb("${url.trimEnd('/')}/$database", Auth.Session(user, password))
 }
 
 /** Server settings, encrypted at rest so the password isn't stored in plain text. */
-class Settings(context: Context) {
+class Settings(
+    context: Context,
+) {
     private val prefs: SharedPreferences =
         EncryptedSharedPreferences.create(
             context,
