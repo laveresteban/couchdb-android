@@ -60,7 +60,13 @@ class DeviceTest {
             val blobs = java.io.File(context.noBackupFilesDir, "couchlite/$name").listFiles()!!
             assertTrue(blobs.none { String(it.readBytes(), Charsets.ISO_8859_1).contains("attachment-plaintext") })
 
-            assertEquals("4321", db.get("secret")!!.body["pin"]!!.jsonPrimitive.content)
+            assertEquals(
+                "4321",
+                db
+                    .get("secret")!!
+                    .body["pin"]!!
+                    .jsonPrimitive.content,
+            )
             assertArrayEquals("attachment-plaintext".toByteArray(), db.getAttachment("secret", "scan.bin"))
         }
 
@@ -69,7 +75,15 @@ class DeviceTest {
         runBlocking<Unit> {
             CouchLiteAndroid.open(context, name, encrypted = true).put("kept", buildJsonObject { put("v", 1) })
             CouchLiteAndroid.close(name)
-            assertEquals(1, CouchLiteAndroid.open(context, name, encrypted = true).get("kept")!!.body["v"]!!.jsonPrimitive.content.toInt())
+            assertEquals(
+                1,
+                CouchLiteAndroid
+                    .open(context, name, encrypted = true)
+                    .get("kept")!!
+                    .body["v"]!!
+                    .jsonPrimitive.content
+                    .toInt(),
+            )
         }
 
     @Test
@@ -77,7 +91,11 @@ class DeviceTest {
         runBlocking<Unit> {
             CouchLiteAndroid.open(context, name, encrypted = true)
             CouchLiteAndroid.close(name)
-            context.getSharedPreferences("couchlite.keys", android.content.Context.MODE_PRIVATE).edit().putString(name, "bogus").commit()
+            context
+                .getSharedPreferences("couchlite.keys", android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putString(name, "bogus")
+                .commit()
             assertFailsWith<KeyLostException> { CouchLiteAndroid.open(context, name, encrypted = true) }
         }
 

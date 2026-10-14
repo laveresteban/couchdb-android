@@ -20,7 +20,12 @@ class CouchLiteTest {
 
     private fun body(v: String) = JsonObject(mapOf("v" to JsonPrimitive(v)))
 
-    private fun value(d: Doc?) = d?.body?.get("v")?.jsonPrimitive?.content
+    private fun value(d: Doc?) =
+        d
+            ?.body
+            ?.get("v")
+            ?.jsonPrimitive
+            ?.content
 
     /** Makes "n" conflicted: base 1-a, then two branches from it, as a remote would write them. */
     private fun SqlLocalStore.conflicted(id: String) {

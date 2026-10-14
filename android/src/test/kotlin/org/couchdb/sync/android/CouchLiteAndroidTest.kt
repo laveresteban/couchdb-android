@@ -55,7 +55,14 @@ class CouchLiteAndroidTest {
         runBlocking<Unit> {
             CouchLiteAndroid.open(context, name).put("n", body("kept"))
             CouchLiteAndroid.close(name)
-            assertEquals("kept", CouchLiteAndroid.open(context, name).get("n")!!.body["v"]!!.jsonPrimitive.content)
+            assertEquals(
+                "kept",
+                CouchLiteAndroid
+                    .open(context, name)
+                    .get("n")!!
+                    .body["v"]!!
+                    .jsonPrimitive.content,
+            )
         }
 
     @Test

@@ -24,7 +24,12 @@ class StorageTest {
         val digest = attachmentDigest(data)
         FileBlobStore(dir, key).put(digest, data)
 
-        val raw = dir.listFiles()!!.filterNot { it.name.endsWith(".digest") }.single().readBytes()
+        val raw =
+            dir
+                .listFiles()!!
+                .filterNot { it.name.endsWith(".digest") }
+                .single()
+                .readBytes()
         assertFalse(String(raw).contains("secret"))
         assertContentEquals(data, FileBlobStore(dir, key).get(digest))
         assertFailsWith<AEADBadTagException> { FileBlobStore(dir, ByteArray(32)).get(digest) }
@@ -65,7 +70,14 @@ class StorageTest {
             db.compact(revsLimit = 5)
             assertNull(db.store.getRev("a", oldest))
             assertEquals(6, db.store.revisionPath("a", rev).size) // 5 kept + the pruned parent id
-            assertEquals("10", db.get("a")!!.body["v"].toString().trim('"'))
+            assertEquals(
+                "10",
+                db
+                    .get("a")!!
+                    .body["v"]
+                    .toString()
+                    .trim('"'),
+            )
             assertTrue(db.blobs.digests().isEmpty())
         }
 }

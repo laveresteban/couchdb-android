@@ -70,7 +70,13 @@ class ReplicationTest {
             rest("PUT", "/a", buildJsonObject { put("v", "server") })
             val phone = device()
             phone.replicator(remote()).sync()
-            assertEquals("server", phone.get("a")!!.body["v"]!!.jsonPrimitive.content)
+            assertEquals(
+                "server",
+                phone
+                    .get("a")!!
+                    .body["v"]!!
+                    .jsonPrimitive.content,
+            )
         }
 
     @Test
@@ -86,7 +92,13 @@ class ReplicationTest {
             p2.put("note", body("edited"), doc.rev)
             p2.replicator(remote()).sync()
             p1.replicator(remote()).sync()
-            assertEquals("edited", p1.get("note")!!.body["v"]!!.jsonPrimitive.content)
+            assertEquals(
+                "edited",
+                p1
+                    .get("note")!!
+                    .body["v"]!!
+                    .jsonPrimitive.content,
+            )
         }
 
     @Test
@@ -111,7 +123,13 @@ class ReplicationTest {
             p1.resolve("n") { _, _ -> Resolution.Merge(body("merged")) }
             p1.replicator(remote()).sync()
             p2.replicator(remote()).sync()
-            assertEquals("merged", p2.get("n")!!.body["v"]!!.jsonPrimitive.content)
+            assertEquals(
+                "merged",
+                p2
+                    .get("n")!!
+                    .body["v"]!!
+                    .jsonPrimitive.content,
+            )
             assertEquals(0, p2.conflicts("n").size)
             val server = rest("GET", "/n?conflicts=true")
             assertNull(server["_conflicts"])
@@ -203,9 +221,10 @@ class ReplicationTest {
             val phone = device()
             repeat(20) { phone.put("d$it", body("1")) }
             val results =
-                (1..3).map {
-                    async(Dispatchers.IO) { phone.replicator(remote()).sync() }
-                }.awaitAll()
+                (1..3)
+                    .map {
+                        async(Dispatchers.IO) { phone.replicator(remote()).sync() }
+                    }.awaitAll()
             assertEquals(20, results.sumOf { it.pushed })
         }
 
@@ -224,15 +243,15 @@ class ReplicationTest {
         method: String,
         path: String,
         json: JsonObject?,
-    ) = Request.Builder()
+    ) = Request
+        .Builder()
         .url("$dbUrl$path")
         .header("Authorization", Credentials.basic(user, password))
         .method(
             method,
             json?.toString()?.toRequestBody("application/json".toMediaType())
                 ?: if (method == "PUT") ByteArray(0).toRequestBody() else null,
-        )
-        .build()
+        ).build()
 
     @Test
     fun `attachments sync both ways`() =
@@ -258,11 +277,16 @@ class ReplicationTest {
 
             // Server-side attachment comes down.
             val serverRev = rest("GET", "/photo")["_rev"]!!.jsonPrimitive.content
-            http.newCall(
-                Request.Builder().url("$dbUrl/photo/b.txt?rev=$serverRev")
-                    .header("Authorization", Credentials.basic(user, password))
-                    .put("from server".toRequestBody("text/plain".toMediaType())).build(),
-            ).execute().close()
+            http
+                .newCall(
+                    Request
+                        .Builder()
+                        .url("$dbUrl/photo/b.txt?rev=$serverRev")
+                        .header("Authorization", Credentials.basic(user, password))
+                        .put("from server".toRequestBody("text/plain".toMediaType()))
+                        .build(),
+                ).execute()
+                .close()
             val pulled = p1.replicator(remote()).sync()
             val winner = p1.get("photo")
             val diag = "pullErrors=${pulled.pullErrors} winner=${winner?.rev}"

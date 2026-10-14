@@ -40,7 +40,9 @@ interface BlobStore {
 }
 
 /** Downloaded attachment content doesn't match the digest the server gave for it. */
-class AttachmentDigestException(message: String) : RuntimeException(message)
+class AttachmentDigestException(
+    message: String,
+) : RuntimeException(message)
 
 /** CouchDB's attachment digest for unencoded content. */
 fun attachmentDigest(data: ByteArray): String = "md5-" + md5Base64(data)
@@ -68,7 +70,10 @@ private fun copyVerified(
  * Files are written to a temp name and renamed, so a crash never leaves a
  * half-written blob under a real digest.
  */
-class FileBlobStore(private val dir: File, private val key: ByteArray? = null) : BlobStore {
+class FileBlobStore(
+    private val dir: File,
+    private val key: ByteArray? = null,
+) : BlobStore {
     init {
         require(key == null || key.size == 32) { "key must be 32 bytes" }
         dir.mkdirs()
@@ -100,7 +105,12 @@ class FileBlobStore(private val dir: File, private val key: ByteArray? = null) :
 
     override fun has(digest: String) = file(digest).exists()
 
-    override fun digests(): Set<String> = dir.listFiles { f -> f.name.endsWith(".digest") }.orEmpty().map { it.readText() }.toSet()
+    override fun digests(): Set<String> =
+        dir
+            .listFiles { f -> f.name.endsWith(".digest") }
+            .orEmpty()
+            .map { it.readText() }
+            .toSet()
 
     override fun delete(digest: String) {
         file(digest).delete()

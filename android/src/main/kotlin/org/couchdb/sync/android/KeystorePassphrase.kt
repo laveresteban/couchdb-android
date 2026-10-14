@@ -17,8 +17,10 @@ import javax.crypto.spec.GCMParameterSpec
  * data cleared, some device restores). The local database can't be opened:
  * call [CouchLiteAndroid.destroy] and sync again. The server copy is intact.
  */
-class KeyLostException(val database: String, cause: Throwable) :
-    IllegalStateException("The key for $database is gone or unusable", cause)
+class KeyLostException(
+    val database: String,
+    cause: Throwable,
+) : IllegalStateException("The key for $database is gone or unusable", cause)
 
 /**
  * A random 32-byte secret per database, stored in SharedPreferences
@@ -52,21 +54,28 @@ internal object KeystorePassphrase {
         context: Context,
         name: String,
     ) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(name).commit()
+        context
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .remove(name)
+            .commit()
     }
 
     private fun masterKey(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
-        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
-            init(
-                KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setKeySize(256)
-                    .build(),
-            )
-        }.generateKey()
+        return KeyGenerator
+            .getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+            .apply {
+                init(
+                    KeyGenParameterSpec
+                        .Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                        .setKeySize(256)
+                        .build(),
+                )
+            }.generateKey()
     }
 
     private fun encrypt(data: ByteArray): ByteArray {

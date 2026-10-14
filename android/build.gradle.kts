@@ -58,7 +58,10 @@ kover {
 
 mavenPublishing {
     // Dokka (used for the AGP javadoc task) can't read sealed interfaces yet, so the javadoc jar is empty.
-    configure(com.vanniktech.maven.publish.AndroidSingleVariantLibrary("release", sourcesJar = true, publishJavadocJar = false))
+    configure(
+        com.vanniktech.maven.publish
+            .AndroidSingleVariantLibrary("release", sourcesJar = true, publishJavadocJar = false),
+    )
     publishToMavenCentral()
     if (project.hasProperty("signingInMemoryKey")) signAllPublications()
     coordinates(project.group.toString(), "couchdb-android", project.version.toString())

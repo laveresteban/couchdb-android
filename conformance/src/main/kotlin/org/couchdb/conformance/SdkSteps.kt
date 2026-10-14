@@ -148,7 +148,13 @@ class SdkSteps {
         id: String,
         size: String,
     ) = run {
-        val url = db().url.newBuilder().addPathSegment(id).addPathSegment(file).build()
+        val url =
+            db()
+                .url
+                .newBuilder()
+                .addPathSegment(id)
+                .addPathSegment(file)
+                .build()
         assertEq(size.toInt(), rawGet(url).size)
     }
 
@@ -177,7 +183,14 @@ class SdkSteps {
         field: String,
         value: String,
     ) = run {
-        assertEq(value, db().request("GET", listOf(id))!!.jsonObject[field]?.jsonPrimitive?.content)
+        assertEq(
+            value,
+            db()
+                .request("GET", listOf(id))!!
+                .jsonObject[field]
+                ?.jsonPrimitive
+                ?.content,
+        )
     }
 
     @Step("Server has <n> documents named <prefix>")
@@ -324,7 +337,12 @@ class SdkSteps {
     private fun payload(size: Int) = ByteArray(size) { (it * 31 % 251).toByte() }
 
     private fun rawGet(url: HttpUrl): ByteArray {
-        val req = Request.Builder().url(url).header("Authorization", Credentials.basic(user, password)).build()
+        val req =
+            Request
+                .Builder()
+                .url(url)
+                .header("Authorization", Credentials.basic(user, password))
+                .build()
         return OkHttpClient().newCall(req).execute().use { it.body!!.bytes() }
     }
 

@@ -12,7 +12,10 @@ data class Doc(
 )
 
 /** A CouchDB revision id, `N-hash`. */
-data class Rev(val gen: Int, val hash: String) : Comparable<Rev> {
+data class Rev(
+    val gen: Int,
+    val hash: String,
+) : Comparable<Rev> {
     override fun toString() = "$gen-$hash"
 
     /** CouchDB orders revisions by generation, then by hash string. */
@@ -27,7 +30,9 @@ data class Rev(val gen: Int, val hash: String) : Comparable<Rev> {
     }
 }
 
-class ConflictException(message: String) : RuntimeException(message)
+class ConflictException(
+    message: String,
+) : RuntimeException(message)
 
 /** Fields CouchDB manages. They are stripped from stored bodies and rebuilt on push. */
 internal val META_FIELDS = setOf("_id", "_rev", "_deleted", "_revisions", "_conflicts", "_revs_info")

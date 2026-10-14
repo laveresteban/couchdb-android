@@ -146,9 +146,13 @@ class ReplicatorProtocolTest {
         runBlocking<Unit> {
             val plain = "a compressible note ".repeat(50).toByteArray()
             val encoded =
-                java.io.ByteArrayOutputStream().also { out ->
-                    java.util.zip.GZIPOutputStream(out).use { it.write(plain) }
-                }.toByteArray()
+                java.io
+                    .ByteArrayOutputStream()
+                    .also { out ->
+                        java.util.zip
+                            .GZIPOutputStream(out)
+                            .use { it.write(plain) }
+                    }.toByteArray()
             // CouchDB's digest covers the bytes it stores, which are gzip-encoded.
             val stored = stub("note.txt", attachmentDigest(encoded), plain.size)
             couch.on("GET", "/db/_changes") { FakeCouch.json(changes("""{"seq":"1","id":"doc","changes":[{"rev":"1-a"}]}""")) }
@@ -197,7 +201,14 @@ class ReplicatorProtocolTest {
             couch.on("POST", "/db/_bulk_docs") { FakeCouch.json("[]", 201) }
 
             phone.replicator(remote()).sync()
-            val bulk = String(couch.recorded("POST", "/db/_bulk_docs").single().body.readByteArray())
+            val bulk =
+                String(
+                    couch
+                        .recorded("POST", "/db/_bulk_docs")
+                        .single()
+                        .body
+                        .readByteArray(),
+                )
             assertTrue(bulk.contains("\"data\":\"dGlueQ==\""), bulk)
             assertEquals(0, couch.recorded("PUT", "/db/doc").size)
         }

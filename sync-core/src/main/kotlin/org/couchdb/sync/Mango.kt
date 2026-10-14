@@ -93,7 +93,8 @@ object Mango {
                         }
                     }
             "\$regex" ->
-                value is JsonPrimitive && value.isString &&
+                value is JsonPrimitive &&
+                    value.isString &&
                     Regex(arg.jsonPrimitive.content).containsMatchIn(value.content)
             "\$mod" -> {
                 val (d, r) = arg.jsonArray.map { it.jsonPrimitive.content.toLong() }

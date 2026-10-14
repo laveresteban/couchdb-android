@@ -26,7 +26,10 @@ import java.util.concurrent.TimeUnit
  * Failure output: `error` (a code such as `auth_required`, `key_lost`, `http`
  * or `unexpected`) and `message`.
  */
-class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+class SyncWorker(
+    context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val name = inputData.getString(KEY_DB) ?: return failure("no_database", null)
         return try {
@@ -97,7 +100,8 @@ object SyncScheduler {
                 .setInputData(workDataOf(SyncWorker.KEY_DB to db, SyncWorker.KEY_ENCRYPTED to encrypted))
                 .addTag(tag(db))
                 .build()
-        WorkManager.getInstance(context)
+        WorkManager
+            .getInstance(context)
             .enqueueUniquePeriodicWork("couchlite-periodic-$db", ExistingPeriodicWorkPolicy.UPDATE, req)
     }
 
@@ -114,7 +118,8 @@ object SyncScheduler {
                 .setInputData(workDataOf(SyncWorker.KEY_DB to db, SyncWorker.KEY_ENCRYPTED to encrypted))
                 .addTag(tag(db))
                 .build()
-        WorkManager.getInstance(context)
+        WorkManager
+            .getInstance(context)
             .enqueueUniqueWork("couchlite-now-$db", ExistingWorkPolicy.KEEP, req)
     }
 
@@ -135,7 +140,8 @@ object SyncScheduler {
     private fun tag(db: String) = "couchlite:$db"
 
     private fun constraints(unmeteredOnly: Boolean) =
-        Constraints.Builder()
+        Constraints
+            .Builder()
             .setRequiredNetworkType(if (unmeteredOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
             .build()
 }

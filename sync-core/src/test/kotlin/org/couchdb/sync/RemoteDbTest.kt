@@ -39,9 +39,13 @@ class RemoteDbTest {
         runBlocking<Unit> {
             val plain = "from server, compressed on disk".repeat(20).toByteArray()
             val gz =
-                java.io.ByteArrayOutputStream().also { out ->
-                    java.util.zip.GZIPOutputStream(out).use { it.write(plain) }
-                }.toByteArray()
+                java.io
+                    .ByteArrayOutputStream()
+                    .also { out ->
+                        java.util.zip
+                            .GZIPOutputStream(out)
+                            .use { it.write(plain) }
+                    }.toByteArray()
             couch.on("GET", "/db/doc/b.txt") {
                 MockResponse().setHeader("Content-Encoding", "gzip").setBody(Buffer().write(gz))
             }
@@ -57,7 +61,14 @@ class RemoteDbTest {
             couch.on("GET", "/db/doc/a.bin") { MockResponse().setBody(Buffer().write("abcd".toByteArray())) }
             val bytes = RemoteDb(url).readAttachment("doc", "a.bin", "1-a") { s, _ -> s.readBytes() }
             assertContentEquals("abcd".toByteArray(), bytes)
-            assertEquals("1-a", couch.recorded("GET", "/db/doc/a.bin").single().requestUrl!!.queryParameter("rev"))
+            assertEquals(
+                "1-a",
+                couch
+                    .recorded("GET", "/db/doc/a.bin")
+                    .single()
+                    .requestUrl!!
+                    .queryParameter("rev"),
+            )
         }
 
     @Test
@@ -108,7 +119,16 @@ class RemoteDbTest {
                     url,
                 ).putWithAttachments("doc", JsonObject(emptyMap()), listOf(attachment())) { "abcd".toByteArray().inputStream() }
             assertNull(failure)
-            assertEquals(true, String(couch.recorded("PUT", "/db/doc").single().body.readByteArray()).endsWith("--\r\n"))
+            assertEquals(
+                true,
+                String(
+                    couch
+                        .recorded("PUT", "/db/doc")
+                        .single()
+                        .body
+                        .readByteArray(),
+                ).endsWith("--\r\n"),
+            )
         }
 
     @Test

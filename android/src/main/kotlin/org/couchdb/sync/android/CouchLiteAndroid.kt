@@ -89,7 +89,9 @@ object CouchLiteAndroid {
             return CouchLite(SqlLocalStore(AndroidSqlDriver(db)), blobs)
         }
         System.loadLibrary("sqlcipher")
-        val db = net.zetetic.database.sqlcipher.SQLiteDatabase.openOrCreateDatabase(dbFile, secret, null, null)
+        val db =
+            net.zetetic.database.sqlcipher.SQLiteDatabase
+                .openOrCreateDatabase(dbFile, secret, null, null)
         db.enableWriteAheadLogging()
         return CouchLite(SqlLocalStore(AndroidSqlDriver(db)), blobs)
     }

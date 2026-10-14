@@ -13,7 +13,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
 
 /** A change in the local database: the doc's latest local sequence number. */
-data class LocalChange(val id: String, val seq: Long)
+data class LocalChange(
+    val id: String,
+    val seq: Long,
+)
 
 /**
  * Document store with a full revision tree per document, the same model
@@ -30,7 +33,9 @@ data class LocalChange(val id: String, val seq: Long)
  * - `indexes` / `idx`: single-field indexes over winning revisions, used
  *   by [find] to narrow candidates before the full selector runs.
  */
-class SqlLocalStore(private val db: SqlDriver) {
+class SqlLocalStore(
+    private val db: SqlDriver,
+) {
     private val lock = Any()
 
     /** Held by a [Replicator] while it syncs this store, so two syncs don't interleave. */
@@ -135,10 +140,11 @@ class SqlLocalStore(private val db: SqlDriver) {
         rev: String,
     ): Doc? =
         synchronized(lock) {
-            db.query("SELECT deleted, body FROM revs WHERE doc_id = ? AND rev = ?", listOf(id, rev)) {
-                val body = it.string(1) ?: return@query null
-                Doc(id, rev, Json.parseToJsonElement(body).jsonObject, it.long(0) == 1L)
-            }.firstOrNull()
+            db
+                .query("SELECT deleted, body FROM revs WHERE doc_id = ? AND rev = ?", listOf(id, rev)) {
+                    val body = it.string(1) ?: return@query null
+                    Doc(id, rev, Json.parseToJsonElement(body).jsonObject, it.long(0) == 1L)
+                }.firstOrNull()
         }
 
     /**
@@ -225,10 +231,12 @@ class SqlLocalStore(private val db: SqlDriver) {
     fun conflicts(id: String): List<Doc> =
         synchronized(lock) {
             val win = winner(id)?.first ?: return emptyList()
-            db.query(
-                "SELECT rev FROM revs WHERE doc_id = ? AND leaf = 1 AND deleted = 0 AND rev != ?",
-                listOf(id, win),
-            ) { it.string(0)!! }.mapNotNull { getRev(id, it) }
+            db
+                .query(
+                    "SELECT rev FROM revs WHERE doc_id = ? AND leaf = 1 AND deleted = 0 AND rev != ?",
+                    listOf(id, win),
+                ) { it.string(0)!! }
+                .mapNotNull { getRev(id, it) }
         }
 
     /** Ids of docs that have conflicts. */
@@ -257,9 +265,10 @@ class SqlLocalStore(private val db: SqlDriver) {
             while (cur != null) {
                 path += cur
                 cur =
-                    db.query("SELECT parent FROM revs WHERE doc_id = ? AND rev = ?", listOf(id, cur)) {
-                        it.string(0)
-                    }.firstOrNull()
+                    db
+                        .query("SELECT parent FROM revs WHERE doc_id = ? AND rev = ?", listOf(id, cur)) {
+                            it.string(0)
+                        }.firstOrNull()
             }
             path
         }
@@ -282,15 +291,17 @@ class SqlLocalStore(private val db: SqlDriver) {
 
     fun allDocs(): List<Doc> =
         synchronized(lock) {
-            db.query("SELECT doc_id FROM docs WHERE deleted = 0 ORDER BY doc_id") { it.string(0)!! }
+            db
+                .query("SELECT doc_id FROM docs WHERE deleted = 0 ORDER BY doc_id") { it.string(0)!! }
                 .mapNotNull { get(it) }
         }
 
     fun getLocal(id: String): JsonObject? =
         synchronized(lock) {
-            db.query("SELECT body FROM local_docs WHERE id = ?", listOf(id)) {
-                Json.parseToJsonElement(it.string(0)!!).jsonObject
-            }.firstOrNull()
+            db
+                .query("SELECT body FROM local_docs WHERE id = ?", listOf(id)) {
+                    Json.parseToJsonElement(it.string(0)!!).jsonObject
+                }.firstOrNull()
         }
 
     fun putLocal(
@@ -339,8 +350,10 @@ class SqlLocalStore(private val db: SqlDriver) {
         id: String,
         rev: String,
     ): JsonObject? =
-        db.query("SELECT body FROM revs WHERE doc_id = ? AND rev = ?", listOf(id, rev)) { it.string(0) }
-            .firstOrNull()?.let { Json.parseToJsonElement(it).jsonObject }
+        db
+            .query("SELECT body FROM revs WHERE doc_id = ? AND rev = ?", listOf(id, rev)) { it.string(0) }
+            .firstOrNull()
+            ?.let { Json.parseToJsonElement(it).jsonObject }
 
     private fun reindex(
         id: String,
@@ -366,9 +379,10 @@ class SqlLocalStore(private val db: SqlDriver) {
     }
 
     private fun winner(id: String): Pair<String, Boolean>? =
-        db.query("SELECT winning_rev, deleted FROM docs WHERE doc_id = ?", listOf(id)) {
-            it.string(0)!! to (it.long(1) == 1L)
-        }.firstOrNull()
+        db
+            .query("SELECT winning_rev, deleted FROM docs WHERE doc_id = ?", listOf(id)) {
+                it.string(0)!! to (it.long(1) == 1L)
+            }.firstOrNull()
 
     private fun hasRev(
         id: String,
@@ -389,7 +403,8 @@ class SqlLocalStore(private val db: SqlDriver) {
                 if (field in indexed) return@transaction
                 db.execute("INSERT INTO indexes VALUES (?)", listOf(field))
                 indexed = indexed + field
-                db.query("SELECT doc_id, winning_rev FROM docs WHERE deleted = 0") { it.string(0)!! to it.string(1)!! }
+                db
+                    .query("SELECT doc_id, winning_rev FROM docs WHERE deleted = 0") { it.string(0)!! to it.string(1)!! }
                     .forEach { (id, rev) ->
                         val v = bodyOf(id, rev)?.let { Mango.field(it, field) } ?: return@forEach
                         db.execute("INSERT INTO idx VALUES (?, ?, ?, ?, ?)", listOf(field, id, Mango.rank(v), numOf(v), strOf(v)))
@@ -410,7 +425,8 @@ class SqlLocalStore(private val db: SqlDriver) {
                 if (fields in compounds) return@transaction
                 db.execute("INSERT INTO cindexes VALUES (?)", listOf(indexName(fields)))
                 compounds = compounds + listOf(fields)
-                db.query("SELECT doc_id, winning_rev FROM docs WHERE deleted = 0") { it.string(0)!! to it.string(1)!! }
+                db
+                    .query("SELECT doc_id, winning_rev FROM docs WHERE deleted = 0") { it.string(0)!! to it.string(1)!! }
                     .forEach { (id, rev) ->
                         val body = bodyOf(id, rev) ?: return@forEach
                         db.execute("INSERT INTO cidx VALUES (?, ?, ?)", listOf(indexName(fields), id, sortKey(body, fields)))
@@ -554,11 +570,13 @@ class SqlLocalStore(private val db: SqlDriver) {
                         }
                     }
                 }
-                db.query("SELECT body FROM revs WHERE body IS NOT NULL") { it.string(0)!! }.flatMap { body ->
-                    (Json.parseToJsonElement(body).jsonObject["_attachments"] as? JsonObject).orEmpty().values.mapNotNull {
-                        (it as? JsonObject)?.get("digest")?.jsonPrimitive?.content
-                    }
-                }.toSet()
+                db
+                    .query("SELECT body FROM revs WHERE body IS NOT NULL") { it.string(0)!! }
+                    .flatMap { body ->
+                        (Json.parseToJsonElement(body).jsonObject["_attachments"] as? JsonObject).orEmpty().values.mapNotNull {
+                            (it as? JsonObject)?.get("digest")?.jsonPrimitive?.content
+                        }
+                    }.toSet()
             }
         }
 }
@@ -584,7 +602,10 @@ internal fun sortKey(
         val payload =
             when (rank) {
                 3 -> numberKey(v.jsonPrimitive.doubleOrNull!!)
-                4 -> v.jsonPrimitive.content.map { "%04x".format(it.code) }.joinToString("")
+                4 ->
+                    v.jsonPrimitive.content
+                        .map { "%04x".format(it.code) }
+                        .joinToString("")
                 5, 6 -> v.toString().map { "%04x".format(it.code) }.joinToString("")
                 else -> ""
             }

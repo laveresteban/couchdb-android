@@ -67,10 +67,19 @@ class Steps {
 
     @Step("Connect as admin")
     fun connect() {
-        val req = Request.Builder().url("$server/_session").header("Authorization", Credentials.basic(user, password)).build()
+        val req =
+            Request
+                .Builder()
+                .url("$server/_session")
+                .header("Authorization", Credentials.basic(user, password))
+                .build()
         val roles =
             OkHttpClient().newCall(req).execute().use {
-                Json.parseToJsonElement(it.body!!.string()).jsonObject["userCtx"]!!.jsonObject["roles"]!!.jsonArray
+                Json
+                    .parseToJsonElement(it.body!!.string())
+                    .jsonObject["userCtx"]!!
+                    .jsonObject["roles"]!!
+                    .jsonArray
             }
         check(roles.any { it.jsonPrimitive.content == "_admin" }) { "not admin on $server" }
     }
@@ -100,7 +109,12 @@ class Steps {
 
     @Step("The database is listed among all databases")
     fun listed() {
-        val req = Request.Builder().url("$server/_all_dbs").header("Authorization", Credentials.basic(user, password)).build()
+        val req =
+            Request
+                .Builder()
+                .url("$server/_all_dbs")
+                .header("Authorization", Credentials.basic(user, password))
+                .build()
         val names = OkHttpClient().newCall(req).execute().use { Json.parseToJsonElement(it.body!!.string()).jsonArray }
         check(names.any { it.jsonPrimitive.content == dbName }) { "$dbName not in $names" }
     }
@@ -108,7 +122,14 @@ class Steps {
     @Step("The database has <n> documents")
     fun docCount(n: String) =
         run {
-            assertEq(n.toInt(), db.request("GET")!!.jsonObject["doc_count"]!!.jsonPrimitive.content.toInt())
+            assertEq(
+                n.toInt(),
+                db
+                    .request("GET")!!
+                    .jsonObject["doc_count"]!!
+                    .jsonPrimitive.content
+                    .toInt(),
+            )
         }
 
     // ---- documents ----
@@ -176,7 +197,11 @@ class Steps {
         field: String,
         value: String,
     ) = run {
-        createdId = db.request("POST", body = buildJsonObject { put(field, value) })!!.jsonObject["id"]!!.jsonPrimitive.content
+        createdId =
+            db
+                .request("POST", body = buildJsonObject { put(field, value) })!!
+                .jsonObject["id"]!!
+                .jsonPrimitive.content
     }
 
     @Step("The created document can be read back with field <field> = <value>")
@@ -203,7 +228,10 @@ class Steps {
         run {
             assertEq(
                 n.toInt(),
-                db.request("POST", listOf("_all_docs"), body = JsonObject(emptyMap()))!!.jsonObject["rows"]!!.jsonArray.size,
+                db
+                    .request("POST", listOf("_all_docs"), body = JsonObject(emptyMap()))!!
+                    .jsonObject["rows"]!!
+                    .jsonArray.size,
             )
         }
 
@@ -216,7 +244,14 @@ class Steps {
     fun changesEmpty() = run { assertEq(emptyList<String>(), changedIds("0")) }
 
     @Step("Remember the current update sequence")
-    fun rememberSeq() = run { rememberedSeq = db.request("GET")!!.jsonObject["update_seq"]!!.jsonPrimitive.content }
+    fun rememberSeq() =
+        run {
+            rememberedSeq =
+                db
+                    .request("GET")!!
+                    .jsonObject["update_seq"]!!
+                    .jsonPrimitive.content
+        }
 
     @Step("The changes feed since the remembered sequence lists documents <ids>")
     fun changesSince(ids: String) = run { assertEq(ids.split(",").sorted(), changedIds(rememberedSeq!!)) }
@@ -224,7 +259,13 @@ class Steps {
     @Step("The changes feed marks document <id> as deleted")
     fun changesDeleted(id: String) =
         run {
-            check(db.changes("0", 1000).results.single { it.id == id }.deleted) { "$id not marked deleted" }
+            check(
+                db
+                    .changes("0", 1000)
+                    .results
+                    .single { it.id == id }
+                    .deleted,
+            ) { "$id not marked deleted" }
         }
 
     @Step("The changes feed filtered to documents <ids> lists documents <expected>")
@@ -251,7 +292,14 @@ class Steps {
         n: String,
         id: String,
     ) = run {
-        assertEq(n.toInt(), db.changes("0", 1000).results.single { it.id == id }.revs.size)
+        assertEq(
+            n.toInt(),
+            db
+                .changes("0", 1000)
+                .results
+                .single { it.id == id }
+                .revs.size,
+        )
     }
 
     @Step("Follow the changes feed with checkpoint <name> until document <id>")
@@ -488,7 +536,13 @@ class Steps {
     @Step("Log out")
     fun logOut() =
         run {
-            val req = Request.Builder().url("$server/_session").delete().header("Cookie", sessionCookie!!).build()
+            val req =
+                Request
+                    .Builder()
+                    .url("$server/_session")
+                    .delete()
+                    .header("Cookie", sessionCookie!!)
+                    .build()
             OkHttpClient().newCall(req).execute().use { check(it.isSuccessful) { "logout failed: ${it.code}" } }
             // CouchDB keeps honoring a cookie until it expires, so a logged-out client sends none.
             sessionCookie = null
@@ -505,14 +559,24 @@ class Steps {
 
     // ---- helpers ----
 
-    private fun docUrl(vararg segments: String): HttpUrl = db.url.newBuilder().apply { segments.forEach(::addPathSegment) }.build()
+    private fun docUrl(vararg segments: String): HttpUrl =
+        db.url
+            .newBuilder()
+            .apply { segments.forEach(::addPathSegment) }
+            .build()
 
     private fun rawCall(
         method: String,
         url: HttpUrl,
         body: RequestBody?,
     ): Pair<Int, ByteArray> {
-        val req = Request.Builder().url(url).header("Authorization", Credentials.basic(user, password)).method(method, body).build()
+        val req =
+            Request
+                .Builder()
+                .url(url)
+                .header("Authorization", Credentials.basic(user, password))
+                .method(method, body)
+                .build()
         return OkHttpClient().newCall(req).execute().use { it.code to it.body!!.bytes() }
     }
 
@@ -522,7 +586,11 @@ class Steps {
         data: ByteArray,
         type: String,
     ) {
-        val rev = db.request("GET", listOf(id))!!.jsonObject["_rev"]!!.jsonPrimitive.content
+        val rev =
+            db
+                .request("GET", listOf(id))!!
+                .jsonObject["_rev"]!!
+                .jsonPrimitive.content
         val url = docUrl(id, name).newBuilder().addQueryParameter("rev", rev).build()
         val (code, body) = rawCall("PUT", url, data.toRequestBody(type.toMediaType()))
         check(code == 201) { "attach returned $code: ${String(body)}" }
@@ -535,7 +603,12 @@ class Steps {
                 put("name", user)
                 put("password", password)
             }
-        val req = Request.Builder().url("$server/_session").post(body.toString().toRequestBody("application/json".toMediaType())).build()
+        val req =
+            Request
+                .Builder()
+                .url("$server/_session")
+                .post(body.toString().toRequestBody("application/json".toMediaType()))
+                .build()
         return OkHttpClient().newCall(req).execute().use { res ->
             res.code to res.headers("Set-Cookie").firstOrNull { it.startsWith("AuthSession=") }?.substringBefore(';')
         }
@@ -543,10 +616,20 @@ class Steps {
 
     /** The user name `_session` reports for [cookie] (null when anonymous). */
     private fun sessionUser(cookie: String?): String? {
-        val req = Request.Builder().url("$server/_session").apply { cookie?.let { header("Cookie", it) } }.build()
+        val req =
+            Request
+                .Builder()
+                .url("$server/_session")
+                .apply { cookie?.let { header("Cookie", it) } }
+                .build()
         return OkHttpClient().newCall(req).execute().use { res ->
-            Json.parseToJsonElement(res.body!!.string()).jsonObject["userCtx"]!!.jsonObject["name"]
-                ?.takeUnless { it is JsonNull }?.jsonPrimitive?.content
+            Json
+                .parseToJsonElement(res.body!!.string())
+                .jsonObject["userCtx"]!!
+                .jsonObject["name"]
+                ?.takeUnless { it is JsonNull }
+                ?.jsonPrimitive
+                ?.content
         }
     }
 
@@ -555,9 +638,18 @@ class Steps {
     private suspend fun putDoc(
         id: String,
         body: JsonObject,
-    ): String = db.request("PUT", listOf(id), body = body)!!.jsonObject["rev"]!!.jsonPrimitive.content
+    ): String =
+        db
+            .request("PUT", listOf(id), body = body)!!
+            .jsonObject["rev"]!!
+            .jsonPrimitive.content
 
-    private suspend fun changedIds(since: String) = db.changes(since, 1000).results.map { it.id }.sorted()
+    private suspend fun changedIds(since: String) =
+        db
+            .changes(since, 1000)
+            .results
+            .map { it.id }
+            .sorted()
 
     private suspend fun expectStatus(
         status: String,
