@@ -32,7 +32,7 @@ kotlin {
 dependencies {
     api(project(":sync-core"))
     implementation("androidx.work:work-runtime-ktx:2.12.0")
-    implementation("net.zetetic:sqlcipher-android:4.19.1@aar")
+    implementation("net.zetetic:sqlcipher-android:4.6.1@aar")
     implementation("androidx.sqlite:sqlite:2.4.0")
 
     testImplementation("org.robolectric:robolectric:4.17")
@@ -42,7 +42,7 @@ dependencies {
     testImplementation(kotlin("test-junit"))
     testImplementation("androidx.work:work-testing:2.12.0")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
-    testImplementation("com.squareup.okhttp3:mockwebserver:5.5.0")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation(kotlin("test-junit"))

@@ -18,7 +18,7 @@ kotlin {
 dependencies {
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
-    api("com.squareup.okhttp3:okhttp:5.5.0")
+    api("com.squareup.okhttp3:okhttp:4.12.0")
 
     testFixturesImplementation("org.xerial:sqlite-jdbc:3.53.4.0")
 
@@ -26,7 +26,7 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
-    testImplementation("com.squareup.okhttp3:mockwebserver:5.5.0")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
 
 tasks.test {
