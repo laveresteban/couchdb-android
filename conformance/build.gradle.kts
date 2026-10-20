@@ -13,7 +13,7 @@ kotlin {
 dependencies {
     implementation(project(":sync-core"))
     implementation(testFixtures(project(":sync-core")))
-    runtimeOnly("org.xerial:sqlite-jdbc:3.46.1.3")
+    runtimeOnly("org.xerial:sqlite-jdbc:3.53.4.0")
     implementation("com.thoughtworks.gauge:gauge-java:1.0.3")
 }
 
