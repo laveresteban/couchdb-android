@@ -26,7 +26,7 @@ dependencies {
     // The SDK. Its sync-core dependency brings kotlinx-serialization for the JSON bodies.
     implementation(project(":android"))
 
-    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
 
@@ -35,5 +35,5 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
     // Keeps the server URL and password encrypted at rest.
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("androidx.security:security-crypto:1.1.0")
 }
